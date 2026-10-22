@@ -4,7 +4,7 @@
 // et les événements de la scène 3D en événements Vue.
 import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { creerSceneGrille, type SceneGrille } from '../engine/boardScene.ts'
-import type { CoordCase, EtatCase, Couleur } from '../game/types.ts'
+import type { CoordCase, EtatCase, Couleur, Bateau } from '../game/types.ts'
 
 const proprietes = withDefaults(
     defineProps<{
@@ -12,9 +12,10 @@ const proprietes = withDefaults(
         vue?: 'inclinee' | 'dessus'
         interactif?: boolean
         apercu?: { cases: CoordCase[]; valide: boolean } | null
+        bateaux?: Bateau[]
         couleurFondMarin?: Couleur
     }>(),
-    { vue: 'inclinee', interactif: false, apercu: null, couleurFondMarin: () => [1.0, 0.2, 0.2] },
+    { vue: 'inclinee', interactif: false, apercu: null, bateaux: () => [], couleurFondMarin: () => [1.0, 0.2, 0.2] },
 )
 
 const emettre = defineEmits<{
@@ -60,6 +61,7 @@ onMounted(async () => {
 
         sceneGrille.value = sceneCreee
         sceneCreee.definirCases(proprietes.cases)
+        sceneCreee.definirBateaux(proprietes.bateaux)
         appliquerApercu()
     
     } catch (erreurCapturee) {
@@ -68,6 +70,7 @@ onMounted(async () => {
 })
 
 watch(() => proprietes.cases, (cases) => sceneGrille.value?.definirCases(cases), { deep: true })
+watch(() => proprietes.bateaux, (bateaux) => sceneGrille.value?.definirBateaux(bateaux), { deep: true })
 watch(() => proprietes.apercu, appliquerApercu, { deep: true })
 watch(() => proprietes.interactif, (actif) => {
     if (!actif) sceneGrille.value?.definirSurvol(null)

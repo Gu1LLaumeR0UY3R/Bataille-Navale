@@ -17,6 +17,7 @@ import {
     disposeEngine,
     disposeScene,
     enableOrthographicCamera,
+    loadGltf,
     registerScene,
     resizeEngine,
     setSubtreeVisible,
@@ -25,8 +26,9 @@ import {
     type Camera,
     type EngineContext,
     type Mesh,
+    type SceneNode,
 } from '@babylonjs/lite'
-import { FLOTTE, TAILLE_GRILLE, type CoordCase, type EtatCase, type Couleur } from '../game/types.ts'
+import { FLOTTE, TAILLE_GRILLE, type Bateau, type CoordCase, type EtatCase, type Couleur } from '../game/types.ts'
 import { TAILLE_CASE, caseVersMonde } from './boardGeometry.ts'
 import { ecranVersCase } from './cellPicking.ts'
 
@@ -42,6 +44,7 @@ export interface SceneGrille {
     /** Met à jour toutes les cases d'un coup. */
     definirCases(cases: readonly (readonly EtatCase[])[]): void
     definirEtatCase(colonne: number, ligne: number, etat: EtatCase): void
+    definirBateaux(bateaux: readonly Bateau[]): void
 
     /** Surbrillance de la case sous le pointeur (null pour l'enlever). */
     definirSurvol(caseGrille: CoordCase | null): void
@@ -70,6 +73,46 @@ function masquer(maillage: Mesh): Mesh {
 }
 
 const LONGUEUR_MAX_BATEAU = Math.max(...FLOTTE.map((bateau) => bateau.longueur))
+
+const CONFIG_MODELES: Record<string, { fichier: string, facteur: number, y: number, inverserSens?: boolean, inverserSensHorizontal?: boolean, inverserSensVertical?: boolean }> = {
+    porte_avions: { fichier: 'porte-avions-lowpoly.glb', facteur: 0.32, y: 0.1 },
+    croiseur: { fichier: 'cuirasse-lowpoly.glb', facteur: 0.03, y: 0.1, inverserSens: true },
+    contre_torpilleur: { fichier: 'patrouilleur-hurricane.glb', facteur: 0.15, y: 0.1, inverserSensVertical: true },
+    sous_marin: { fichier: 'sous-marin.glb', facteur: 0.0045, y: 0.1, inverserSensHorizontal: true },
+    torpilleur: { fichier: 'cuirasse-simple.glb', facteur: 0.59, y: 0.3, inverserSens: true },
+}
+
+function mesurer(racine: SceneNode): { min: [number, number, number], max: [number, number, number] } | null {
+    const min: [number, number, number] = [Infinity, Infinity, Infinity]
+    const max: [number, number, number] = [-Infinity, -Infinity, -Infinity]
+    const visiter = (noeud: SceneNode) => {
+        const limites = noeud as SceneNode & {
+            boundMin?: readonly [number, number, number]
+            boundMax?: readonly [number, number, number]
+        }
+        if (limites.boundMin && limites.boundMax) {
+            const matrice = noeud.worldMatrix
+            for (const x of [limites.boundMin[0], limites.boundMax[0]]) {
+                for (const y of [limites.boundMin[1], limites.boundMax[1]]) {
+                    for (const z of [limites.boundMin[2], limites.boundMax[2]]) {
+                        const point = [
+                            x * matrice[0]! + y * matrice[4]! + z * matrice[8]! + matrice[12]!,
+                            x * matrice[1]! + y * matrice[5]! + z * matrice[9]! + matrice[13]!,
+                            x * matrice[2]! + y * matrice[6]! + z * matrice[10]! + matrice[14]!,
+                        ]
+                        for (let axe = 0; axe < 3; axe++) {
+                            min[axe] = Math.min(min[axe]!, point[axe]!)
+                            max[axe] = Math.max(max[axe]!, point[axe]!)
+                        }
+                    }
+                }
+            }
+        }
+        noeud.children.forEach(visiter)
+    }
+    visiter(racine)
+    return Number.isFinite(min[0]) ? { min, max } : null
+}
 
 export async function creerSceneGrille(toile: HTMLCanvasElement, options: OptionsSceneGrille): Promise<SceneGrille> {
     if (!('gpu' in navigator)) throw new Error('WebGPU non disponible dans ce navigateur.')
@@ -133,6 +176,11 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
     const marqueursBateau: Mesh[][] = []
     const marqueursTouche: Mesh[][] = []
     const marqueursRate: Mesh[][] = []
+    const etatsCases: EtatCase[][] = Array.from(
+        { length: TAILLE_GRILLE },
+        () => Array<EtatCase>(TAILLE_GRILLE).fill('eau'),
+    )
+    const casesAvecModele = new Set<string>()
 
     for (let ligne = 0; ligne < TAILLE_GRILLE; ligne++) {
         marqueursBateau.push([])
@@ -180,6 +228,37 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
         })
     const lotValide = creerLotApercu(materiauValide)
     const lotInvalide = creerLotApercu(materiauInvalide)
+
+    const modelesBateaux = new Map<string, {
+        racine: SceneNode
+        centreX: number
+        centreZ: number
+        axeLongX: boolean
+    }>()
+    for (const modele of FLOTTE) {
+        const config = CONFIG_MODELES[modele.identifiant]!
+        const asset = await loadGltf(moteur, `/modeles/${config.fichier}`)
+        const racine = asset.entities[0]!
+        racine.scaling.set(
+            racine.scaling.x * config.facteur,
+            racine.scaling.y * config.facteur,
+            racine.scaling.z * config.facteur,
+        )
+        addToScene(scene, asset)
+        const limites = mesurer(racine)
+        if (!limites) {
+            throw new Error(`Impossible de mesurer le modèle ${config.fichier} : aucune géométrie avec des limites.`)
+        }
+        const largeurX = limites.max[0] - limites.min[0]
+        const largeurZ = limites.max[2] - limites.min[2]
+        setSubtreeVisible(racine, false)
+        modelesBateaux.set(modele.identifiant, {
+            racine,
+            centreX: (limites.min[0] + limites.max[0]) / 2,
+            centreZ: (limites.min[2] + limites.max[2]) / 2,
+            axeLongX: largeurX >= largeurZ,
+        })
+    }
 
     // 5. Enregistrement (compile les pipelines GPU) puis démarrage de la boucle de rendu
     await registerScene(scene)
@@ -232,7 +311,13 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
 
     // 7. L'API exposée au reste de l'application
     const definirEtatCase = (colonne: number, ligne: number, etat: EtatCase) => {
-        setSubtreeVisible(marqueursBateau[ligne]![colonne]!, etat === 'bateau' || etat === 'coule')
+        etatsCases[ligne]![colonne] = etat
+        const cleCase = `${colonne},${ligne}`
+        const aUnModele = casesAvecModele.has(cleCase)
+        setSubtreeVisible(
+            marqueursBateau[ligne]![colonne]!,
+            !aUnModele && (etat === 'bateau' || etat === 'coule'),
+        )
         setSubtreeVisible(marqueursTouche[ligne]![colonne]!, etat === 'touche' || etat === 'coule')
         setSubtreeVisible(marqueursRate[ligne]![colonne]!, etat === 'rate')
     }
@@ -249,6 +334,49 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
             for (let ligne = 0; ligne < TAILLE_GRILLE; ligne++) {
                 for (let colonne = 0; colonne < TAILLE_GRILLE; colonne++) {
                     definirEtatCase(colonne, ligne, cases[ligne]?.[colonne] ?? 'eau')
+                }
+            }
+        },
+        definirBateaux(bateaux) {
+            modelesBateaux.forEach(({ racine }) => setSubtreeVisible(racine, false))
+            casesAvecModele.clear()
+            for (const bateau of bateaux) {
+                const modele = modelesBateaux.get(bateau.identifiant)
+                if (!modele) continue
+                for (let index = 0; index < bateau.longueur; index++) {
+                    const colonne = bateau.colonne + (bateau.horizontal ? index : 0)
+                    const ligne = bateau.ligne + (bateau.horizontal ? 0 : index)
+                    if (colonne >= 0 && colonne < TAILLE_GRILLE && ligne >= 0 && ligne < TAILLE_GRILLE) {
+                        casesAvecModele.add(`${colonne},${ligne}`)
+                    }
+                }
+                const { racine, centreX, centreZ, axeLongX } = modele
+                const decalage = (bateau.longueur - 1) / 2
+                const centre = bateau.horizontal
+                    ? caseVersMonde({ colonne: bateau.colonne + decalage, ligne: bateau.ligne })
+                    : caseVersMonde({ colonne: bateau.colonne, ligne: bateau.ligne + decalage })
+                const rotationBase = bateau.horizontal === axeLongX ? 0 : Math.PI / 2
+                const config = CONFIG_MODELES[bateau.identifiant]!
+                const inverserSens = config.inverserSens ||
+                    (bateau.horizontal && config.inverserSensHorizontal) ||
+                    (!bateau.horizontal && config.inverserSensVertical)
+                const rotation = rotationBase + (inverserSens ? Math.PI : 0)
+                const cosinus = Math.cos(rotation)
+                const sinus = Math.sin(rotation)
+                const centreModeleX = cosinus * centreX + sinus * centreZ
+                const centreModeleZ = -sinus * centreX + cosinus * centreZ
+                racine.position.set(
+                    centre.x - centreModeleX,
+                    config.y,
+                    centre.z - centreModeleZ,
+                )
+                racine.rotation.y = rotation
+                racine.rotation.z = 0
+                setSubtreeVisible(racine, true)
+            }
+            for (let ligne = 0; ligne < TAILLE_GRILLE; ligne++) {
+                for (let colonne = 0; colonne < TAILLE_GRILLE; colonne++) {
+                    definirEtatCase(colonne, ligne, etatsCases[ligne]![colonne]!)
                 }
             }
         },

@@ -64,6 +64,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', surTouche))
             <Grille3D
                 vue="dessus"
                 :cases="cases"
+                :bateaux="bateauxPlaces"
                 :apercu="apercu"
                 interactif
                 @survol-case="caseSurvolee = $event"

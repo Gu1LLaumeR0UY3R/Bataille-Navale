@@ -96,7 +96,7 @@ function recommencer() {
         <section v-else class="grilles">
             <figure>
                 <figcaption>Ma flotte</figcaption>
-                <Grille3D :cases="maGrille" :couleur-fond-marin="[0.2,0.5,0.2]"/>
+                <Grille3D :cases="maGrille" :bateaux="mesBateaux" :couleur-fond-marin="[0.2,0.5,0.2]"/>
             </figure>
             <figure>
                 <figcaption>Eaux ennemies <small v-if="etape === 'en_cours'">{{ aMoiDeJouer ? '— cliquez pour tirer' : '— l’adversaire joue' }}</small></figcaption>
