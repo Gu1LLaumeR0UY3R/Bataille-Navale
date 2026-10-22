@@ -1,0 +1,33 @@
+{
+    "name": "bataille-navale",
+    "version": "0.1.0",
+    "description": "Bataille navale 3D — Vue + BabylonLite (squelette pédagogique)",
+    "scripts": {
+        "dev": "vite",
+        "build": "vue-tsc --noEmit && vite build",
+        "preview": "vite preview",
+        "typecheck": "vue-tsc --noEmit",
+        "check:picking": "node --experimental-strip-types scripts/check-picking.ts"
+    },
+    "devEngines": {
+        "packageManager": {
+            "name": "pnpm",
+            "version": "12.14.0",
+            "onFail": "download"
+        }
+    },
+    "packageManager": "pnpm@12.14.0",
+    "type": "module",
+    "dependencies": {
+        "@babylonjs/lite": "1.34.0",
+        "vue": "^3.5.44"
+    },
+    "devDependencies": {
+        "@vitejs/plugin-vue": "^6.0.10",
+        "@webgpu/types": "^0.1.74",
+        "typescript": "5.9.3",
+        "vite": "^8.3.4",
+        "vue-tsc": "^3.3.13"
+    },
+    "private": true
+}
