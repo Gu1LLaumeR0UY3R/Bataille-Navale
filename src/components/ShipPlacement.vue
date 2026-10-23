@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Placement des bateaux, vue de dessus. La détection de case et le dessin sont dans le moteur ;
+// Placement des bateaux, sur la même grille 3D (même mer, même caméra) que la partie. La détection de case et le dessin sont dans le moteur ;
 // les règles (est-ce valide ?) sont dans game/rules.ts. Ce composant ne fait que les relier.
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import Grille3D from './BoardView3D.vue'
@@ -71,7 +71,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', surTouche))
             </div>
             <div class="grille-placement">
                 <Grille3D
-                    vue="dessus"
                     :cases="cases"
                     :bateaux="bateauxPlaces"
                     :apercu="apercu"

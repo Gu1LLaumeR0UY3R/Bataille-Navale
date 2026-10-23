@@ -40,6 +40,8 @@ import { creerEau, creerEffets, type Effets } from './effets.ts'
 const COULEUR_DALLE: Couleur = [0.07, 0.62, 0.72]
 const COULEUR_EAU: Couleur = [0.02, 0.3, 0.38]
 const NIVEAU_EAU = -0.3
+/** Fond marin : l'eau est un bloc plein entre ce fond et la surface. */
+const FOND_MARIN = -1.4
 const EPAISSEUR_LIGNE_GRILLE = 0.018
 const HAUTEUR_LIGNE_GRILLE = NIVEAU_EAU + 0.16
 const DUREE_NAUFRAGE = 3.5
@@ -198,7 +200,7 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
     } else {
         fondMarin.material = materiauColore(options.couleurFondMarin)
     }
-    fondMarin.position.set(0, options.vue === 'inclinee' ? -1 : -0.12, 0)
+    fondMarin.position.set(0, options.vue === 'inclinee' ? FOND_MARIN : -0.12, 0)
     addToScene(scene, fondMarin)
 
     const materiauDalle = materiauColore(COULEUR_DALLE)
@@ -208,7 +210,7 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
 
     let effets: Effets | null = null
     if (options.vue === 'inclinee') {
-        creerEau(moteur, scene, { taille: TAILLE_GRILLE + 4, couleur: COULEUR_EAU, niveau: NIVEAU_EAU })
+        creerEau(moteur, scene, { taille: TAILLE_GRILLE + 4, couleur: COULEUR_EAU, niveau: NIVEAU_EAU, fond: FOND_MARIN })
         effets = await creerEffets(moteur, scene)
 
         const materiauQuadrillage = materiauColore([0.02, 0.18, 0.24], [0.12, 0.8, 1])
