@@ -40,10 +40,6 @@ import type { Carte } from '../maps/types.ts'
 
 /** Couleur des cases de placement vues du dessus (RGB, 0 à 1). */
 const COULEUR_DALLE: Couleur = [0.07, 0.62, 0.72]
-<<<<<<< HEAD
-const COULEUR_EAU: Couleur = [0.04, 0.4, 0.52]
-=======
->>>>>>> 7e35a9bde77b9e9cd51915efdfdedda515b3f8de
 const NIVEAU_EAU = -0.3
 /** Fond marin : l'eau est un bloc plein entre ce fond et la surface. */
 const FOND_MARIN = -1.4
@@ -173,11 +169,7 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
     // 1. Moteur et scène
     const moteur: EngineContext = await createEngine(toile)
     const scene = createSceneContext(moteur)
-<<<<<<< HEAD
-    scene.clearColor = { r: 0.12, g: 0.36, b: 0.52, a: 1 }
-=======
     scene.clearColor = { r: ambiance.ciel[0], g: ambiance.ciel[1], b: ambiance.ciel[2], a: 1 }
->>>>>>> 7e35a9bde77b9e9cd51915efdfdedda515b3f8de
 
     // 2. Caméra FIXE : on n'appelle pas attachControl, le joueur ne peut pas la bouger.
     let camera: Camera
@@ -195,26 +187,15 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
     // 3. Lumières
     if (options.vue === 'inclinee') {
         // Ciel : lumière d'ambiance douce, plus claire en haut qu'en bas, sans reflet.
-<<<<<<< HEAD
-        const ciel = createHemisphericLight([0, 1, 0], 0.85)
-        ciel.diffuseColor = [0.78, 0.9, 1]
-        ciel.groundColor = [0.32, 0.5, 0.58]
-=======
         const ciel = createHemisphericLight([0, 1, 0], ambiance.lumiereCiel.intensite)
         ciel.diffuseColor = ambiance.lumiereCiel.couleur
         ciel.groundColor = ambiance.eau.map((composante) => 0.3 + composante * 0.4) as Couleur
->>>>>>> 7e35a9bde77b9e9cd51915efdfdedda515b3f8de
         ciel.specularColor = [0, 0, 0]
         addToScene(scene, ciel)
         // Soleil : haut dans le ciel, derrière la caméra (la lumière avance vers +z, comme le regard).
         // Les reflets partent donc loin de la caméra : ni éblouissement ni « pluie » de points brillants.
-<<<<<<< HEAD
-        const soleil = createDirectionalLight([0.35, -0.85, 0.5], 0.85)
-        soleil.diffuse = [1, 0.93, 0.76]
-=======
         const soleil = createDirectionalLight(ambiance.soleil.direction, ambiance.soleil.intensite)
         soleil.diffuse = ambiance.soleil.couleur
->>>>>>> 7e35a9bde77b9e9cd51915efdfdedda515b3f8de
         soleil.specular = [0.12, 0.1, 0.07]
         addToScene(scene, soleil)
     }
