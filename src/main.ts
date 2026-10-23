@@ -1,4 +1,5 @@
 import { createApp } from 'vue'
+import './styles/theme.css'
 import Application from './App.vue'
 import EssaiModeles from './components/EssaiModeles.vue'
 

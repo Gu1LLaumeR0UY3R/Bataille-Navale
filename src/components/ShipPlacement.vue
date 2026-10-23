@@ -1,11 +1,13 @@
 <script setup lang="ts">
-// Placement des bateaux, vue de dessus. La détection de case et le dessin sont dans le moteur ;
+// Placement des bateaux, sur la même grille 3D (même mer, même caméra) que la partie. La détection de case et le dessin sont dans le moteur ;
 // les règles (est-ce valide ?) sont dans game/rules.ts. Ce composant ne fait que les relier.
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import Grille3D from './BoardView3D.vue'
 import { grilleDepuisBateaux, peutPlacer, placerFlotteAleatoirement, casesBateau } from '../game/rules.ts'
 import { FLOTTE, type CoordCase, type Bateau } from '../game/types.ts'
+import type { Carte } from '../maps/types.ts'
 
+defineProps<{ carte?: Carte | null }>()
 const emettre = defineEmits<{ valider: [bateaux: Bateau[]] }>()
 
 const bateauxPlaces = ref<Bateau[]>([])
@@ -71,7 +73,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', surTouche))
             </div>
             <div class="grille-placement">
                 <Grille3D
-                    vue="dessus"
+                    :carte="carte"
                     :cases="cases"
                     :bateaux="bateauxPlaces"
                     :apercu="apercu"
@@ -146,11 +148,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', surTouche))
 .panneau-grille,
 .panneau-placement {
     min-width: 0;
-    border: 1px solid rgb(226 255 239 / 17%);
+    border: 1px solid var(--ligne);
     border-radius: 22px;
-    background: linear-gradient(145deg, rgb(255 255 255 / 10%), rgb(255 255 255 / 4%));
-    box-shadow: 0 20px 55px rgb(0 23 30 / 22%);
-    backdrop-filter: blur(12px);
+    background: var(--panneau);
+    box-shadow: 0 20px 55px rgb(3 24 42 / 28%);
 }
 .panneau-grille {
     padding: clamp(0.8rem, 2vw, 1.2rem);
@@ -180,18 +181,18 @@ onBeforeUnmount(() => window.removeEventListener('keydown', surTouche))
     padding: 0.4rem 0.7rem;
     border: 1px solid var(--ligne);
     border-radius: 999px;
-    color: #d8eee2;
+    color: var(--craie);
     font-size: 0.75rem;
 }
 .grille-placement {
     overflow: hidden;
     border: 1px solid rgb(255 255 255 / 17%);
     border-radius: 14px;
-    background: #073c43;
+    background: #1f5c85;
 }
 .aide-grille {
     margin: 0.8rem 0.25rem 0.1rem;
-    color: #c4ded2;
+    color: var(--attenue);
     font-size: 0.8rem;
 }
 .aide-grille span {
@@ -210,7 +211,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', surTouche))
 }
 .titre-panneau p {
     margin: 0.55rem 0 1.2rem;
-    color: #c0ded2;
+    color: var(--attenue);
     font-size: 0.88rem;
 }
 .progression {
@@ -220,7 +221,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', surTouche))
     display: flex;
     justify-content: space-between;
     margin-bottom: 0.4rem;
-    color: #c0ded2;
+    color: var(--attenue);
     font-size: 0.73rem;
 }
 .progression-label strong {
@@ -276,7 +277,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', surTouche))
     font-size: 0.88rem;
 }
 .modele-courant div > span {
-    color: #c0ded2;
+    color: var(--attenue);
     font-size: 0.72rem;
 }
 .flotte {
@@ -310,7 +311,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', surTouche))
     place-items: center;
     border: 1px solid var(--ligne);
     border-radius: 50%;
-    color: #c0ded2;
+    color: var(--attenue);
     font-size: 0.66rem;
     font-weight: 700;
 }

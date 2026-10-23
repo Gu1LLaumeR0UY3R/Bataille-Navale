@@ -5,6 +5,7 @@
 import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { creerSceneGrille, type SceneGrille } from '../engine/boardScene.ts'
 import type { CoordCase, EtatCase, Couleur, Bateau } from '../game/types.ts'
+import type { Carte } from '../maps/types.ts'
 
 const proprietes = withDefaults(
     defineProps<{
@@ -14,8 +15,9 @@ const proprietes = withDefaults(
         apercu?: { cases: CoordCase[]; valide: boolean } | null
         bateaux?: Bateau[]
         couleurFondMarin?: Couleur
+        carte?: Carte | null
     }>(),
-    { vue: 'inclinee', interactif: false, apercu: null, bateaux: () => [], couleurFondMarin: () => [1.0, 0.2, 0.2] },
+    { vue: 'inclinee', interactif: false, apercu: null, bateaux: () => [], couleurFondMarin: () => [1.0, 0.2, 0.2], carte: null },
 )
 
 const emettre = defineEmits<{
@@ -41,6 +43,7 @@ onMounted(async () => {
             vue: proprietes.vue,
             couleurCase: null,
             couleurFondMarin: proprietes.couleurFondMarin,
+            carte: proprietes.carte,
         })
 
         if (estDemonte) {
@@ -107,7 +110,7 @@ onBeforeUnmount(() => {
     width: 100%;
     aspect-ratio: 1 / 1; /* grille carrée : la caméra fixe est cadrée pour un canvas carré */
     border-radius: 6px;
-    background: #05101e;
+    background: #1f5c85;
     touch-action: none;
 }
 .toile-grille.interactif {
@@ -122,7 +125,7 @@ onBeforeUnmount(() => {
     margin: 0;
     text-align: center;
     color: #f4c9bd;
-    background: rgb(5 16 30 / 0.92);
+    background: rgb(11 47 74 / 0.94);
     border-radius: 6px;
 }
 </style>

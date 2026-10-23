@@ -9,6 +9,7 @@
 
 import {
     addToScene,
+    createBox,
     createCylinder,
     createMeshFromData,
     createSphere,
@@ -88,10 +89,38 @@ export interface OptionsEau {
     couleur: Couleur
     /** Hauteur moyenne de l'eau. */
     niveau: number
+    /** Hauteur du fond : l'eau forme un bloc plein entre le fond et la surface. */
+    fond: number
 }
 
 const SUBDIVISIONS_EAU = 40
 const AMPLITUDE_EAU = 1
+
+/** Hauteur de la surface (et pente) au point (x, z), à l'instant `temps`, relativement au niveau moyen. */
+function surfaceEau(x: number, z: number, temps: number) {
+    // Trois sinusoïdes de directions et de vitesses différentes : la surface ne se répète pas à l'œil.
+    const phaseA = 1.6 * x + 1.1 * temps
+    const phaseB = 1.2 * z - 0.9 * temps
+    const phaseC = 2.4 * (x + z) + 1.7 * temps
+    return {
+        hauteur: (0.05 * Math.sin(phaseA) + 0.04 * Math.sin(phaseB) + 0.025 * Math.sin(phaseC)) * AMPLITUDE_EAU,
+        penteX: 0.05 * 1.6 * Math.cos(phaseA) + 0.025 * 2.4 * Math.cos(phaseC),
+        penteZ: 0.04 * 1.2 * Math.cos(phaseB) + 0.025 * 2.4 * Math.cos(phaseC),
+    }
+}
+
+/** Part de la profondeur occupée par la tranche claire (près de la surface) des parois. */
+const PART_TRANCHE_CLAIRE = 0.4
+
+function materiauEau(couleur: Couleur, luminosite: number, emission: number, brillant: boolean) {
+    const materiau = createStandardMaterial()
+    materiau.diffuseColor = [couleur[0] * luminosite, couleur[1] * luminosite, couleur[2] * luminosite]
+    materiau.emissiveColor = [couleur[0] * emission, couleur[1] * emission, couleur[2] * emission]
+    materiau.specularColor = brillant ? [0.1, 0.16, 0.18] : [0.02, 0.04, 0.05]
+    materiau.specularPower = 24
+    materiau.backFaceCulling = false
+    return materiau
+}
 
 export function creerEau(moteur: EngineContext, scene: SceneContext, options: OptionsEau): void {
     const colonnes = SUBDIVISIONS_EAU + 1
@@ -127,43 +156,100 @@ export function creerEau(moteur: EngineContext, scene: SceneContext, options: Op
         }
     }
 
+    // Parois du bloc d'eau : quatre rubans verticaux le long des bords. Leur arête haute reprend
+    // exactement les sommets de bord de la surface, donc elle monte et descend avec elle.
+    const demi = options.taille / 2
+    const profondeurTotale = options.niveau - options.fond
+    const basTranche = options.niveau - profondeurTotale * PART_TRANCHE_CLAIRE
+    const cotes = [
+        { point: (k: number): [number, number] => [-demi + (k / SUBDIVISIONS_EAU) * options.taille, -demi], normale: [0, -1] },
+        { point: (k: number): [number, number] => [demi, -demi + (k / SUBDIVISIONS_EAU) * options.taille], normale: [1, 0] },
+        { point: (k: number): [number, number] => [demi - (k / SUBDIVISIONS_EAU) * options.taille, demi], normale: [0, 1] },
+        { point: (k: number): [number, number] => [-demi, demi - (k / SUBDIVISIONS_EAU) * options.taille], normale: [-1, 0] },
+    ] as const
+    const sommetsParCote = colonnes * 2
+    const positionsParois = new Float32Array(cotes.length * sommetsParCote * 3)
+    const normalesParois = new Float32Array(cotes.length * sommetsParCote * 3)
+    const uvsParois = new Float32Array(cotes.length * sommetsParCote * 2)
+    const indicesParois = new Uint32Array(cotes.length * SUBDIVISIONS_EAU * 6)
+    let indiceParoi = 0
+    cotes.forEach((cote, numero) => {
+        const base = numero * sommetsParCote
+        for (let k = 0; k < colonnes; k++) {
+            const [x, z] = cote.point(k)
+            // Sommet haut (animé) puis sommet bas (fixe, en bas de la tranche claire).
+            for (let bord = 0; bord < 2; bord++) {
+                const sommet = base + k * 2 + bord
+                positionsParois[sommet * 3] = x
+                positionsParois[sommet * 3 + 1] = bord === 0 ? options.niveau : basTranche
+                positionsParois[sommet * 3 + 2] = z
+                normalesParois[sommet * 3] = cote.normale[0]
+                normalesParois[sommet * 3 + 2] = cote.normale[1]
+                uvsParois[sommet * 2] = k / SUBDIVISIONS_EAU
+                uvsParois[sommet * 2 + 1] = bord
+            }
+        }
+        for (let k = 0; k < SUBDIVISIONS_EAU; k++) {
+            const hautA = base + k * 2
+            const basA = hautA + 1
+            const hautB = hautA + 2
+            const basB = hautA + 3
+            indicesParois[indiceParoi++] = hautA
+            indicesParois[indiceParoi++] = basA
+            indicesParois[indiceParoi++] = hautB
+            indicesParois[indiceParoi++] = hautB
+            indicesParois[indiceParoi++] = basA
+            indicesParois[indiceParoi++] = basB
+        }
+    })
+
     let temps = 0
     const calculer = () => {
         for (let sommet = 0; sommet < nombreSommets; sommet++) {
             const x = positions[sommet * 3]!
             const z = positions[sommet * 3 + 2]!
-            // Trois sinusoïdes de directions et de vitesses différentes : la surface ne se répète pas à l'œil.
-            const phaseA = 1.6 * x + 1.1 * temps
-            const phaseB = 1.2 * z - 0.9 * temps
-            const phaseC = 2.4 * (x + z) + 1.7 * temps
-            const hauteur = 0.05 * Math.sin(phaseA) + 0.04 * Math.sin(phaseB) + 0.025 * Math.sin(phaseC)
-            const penteX = 0.05 * 1.6 * Math.cos(phaseA) + 0.025 * 2.4 * Math.cos(phaseC)
-            const penteZ = 0.04 * 1.2 * Math.cos(phaseB) + 0.025 * 2.4 * Math.cos(phaseC)
-            positions[sommet * 3 + 1] = options.niveau + hauteur * AMPLITUDE_EAU
+            const { hauteur, penteX, penteZ } = surfaceEau(x, z, temps)
+            positions[sommet * 3 + 1] = options.niveau + hauteur
             // Normale = (-dh/dx, 1, -dh/dz), normalisée.
             const longueur = Math.hypot(penteX, 1, penteZ)
             normales[sommet * 3] = -penteX / longueur
             normales[sommet * 3 + 1] = 1 / longueur
             normales[sommet * 3 + 2] = -penteZ / longueur
         }
+        for (let sommet = 0; sommet < cotes.length * colonnes; sommet++) {
+            const indiceHaut = sommet * 2
+            positionsParois[indiceHaut * 3 + 1] = options.niveau +
+                surfaceEau(positionsParois[indiceHaut * 3]!, positionsParois[indiceHaut * 3 + 2]!, temps).hauteur
+        }
     }
     calculer()
 
+    // Surface
     const eau = createMeshFromData(moteur, 'eau_profonde', positions, normales, indices, uvs)
-    const materiau = createStandardMaterial()
-    materiau.diffuseColor = options.couleur
-    materiau.emissiveColor = [options.couleur[0] * 0.25, options.couleur[1] * 0.25, options.couleur[2] * 0.25]
-    materiau.specularColor = [0.35, 0.55, 0.6]
-    materiau.specularPower = 48
-    materiau.backFaceCulling = false
-    eau.material = materiau
+    eau.material = materiauEau(options.couleur, 1, 0.25, true)
     addToScene(scene, eau)
+
+    // Tranche claire des parois (animée) : l'épaisseur de l'eau vue de côté
+    const parois = createMeshFromData(moteur, 'eau_parois', positionsParois, normalesParois, indicesParois, uvsParois)
+    parois.material = materiauEau(options.couleur, 0.85, 0.3, false)
+    addToScene(scene, parois)
+
+    // Eau profonde : un bloc plein, plus sombre, jusqu'au fond. Son dessus est sous la surface, donc invisible d'en haut.
+    const profond = createBox(moteur, {
+        width: options.taille,
+        height: basTranche - options.fond,
+        depth: options.taille,
+    })
+    profond.material = materiauEau(options.couleur, 0.5, 0.1, false)
+    profond.position.set(0, (basTranche + options.fond) / 2, 0)
+    addToScene(scene, profond)
 
     onBeforeRender(scene, (deltaMs) => {
         temps += Math.min(deltaMs, 50) / 1000
         calculer()
         updateMeshPositions(moteur, eau, positions)
         updateMeshNormals(moteur, eau, normales)
+        updateMeshPositions(moteur, parois, positionsParois)
     })
 }
 

@@ -35,11 +35,14 @@ import { TAILLE_CASE, caseVersMonde } from './boardGeometry.ts'
 import { ecranVersCase } from './cellPicking.ts'
 import { hauteurVague } from './vagues.ts'
 import { creerEau, creerEffets, type Effets } from './effets.ts'
+import { AMBIANCE_DEFAUT } from '../maps/chargeur.ts'
+import type { Carte } from '../maps/types.ts'
 
 /** Couleur des cases de placement vues du dessus (RGB, 0 à 1). */
 const COULEUR_DALLE: Couleur = [0.07, 0.62, 0.72]
-const COULEUR_EAU: Couleur = [0.02, 0.3, 0.38]
 const NIVEAU_EAU = -0.3
+/** Fond marin : l'eau est un bloc plein entre ce fond et la surface. */
+const FOND_MARIN = -1.4
 const EPAISSEUR_LIGNE_GRILLE = 0.018
 const HAUTEUR_LIGNE_GRILLE = NIVEAU_EAU + 0.16
 const DUREE_NAUFRAGE = 3.5
@@ -78,7 +81,9 @@ export interface OptionsSceneGrille {
     /** 'inclinee' : vue en perspective inclinée (les grilles de jeu). 'dessus' : vue de dessus (placement). */
     vue: 'inclinee' | 'dessus',
     couleurCase: Couleur | null,
-    couleurFondMarin: Couleur | null 
+    couleurFondMarin: Couleur | null,
+    /** Carte choisie : ambiance (mer, ciel, lumière) et décors. Sans carte : ambiance par défaut. */
+    carte?: Carte | null
 }
 
 // "API" de SceneGrille : ce que l'on peut appeler de l'extérieur
@@ -159,10 +164,12 @@ function mesurer(racine: SceneNode): { min: [number, number, number], max: [numb
 export async function creerSceneGrille(toile: HTMLCanvasElement, options: OptionsSceneGrille): Promise<SceneGrille> {
     if (!('gpu' in navigator)) throw new Error('WebGPU non disponible dans ce navigateur.')
 
+    const ambiance = options.carte?.ambiance ?? AMBIANCE_DEFAUT
+
     // 1. Moteur et scène
     const moteur: EngineContext = await createEngine(toile)
     const scene = createSceneContext(moteur)
-    scene.clearColor = { r: 0.02, g: 0.06, b: 0.12, a: 1 }
+    scene.clearColor = { r: ambiance.ciel[0], g: ambiance.ciel[1], b: ambiance.ciel[2], a: 1 }
 
     // 2. Caméra FIXE : on n'appelle pas attachControl, le joueur ne peut pas la bouger.
     let camera: Camera
@@ -179,8 +186,18 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
 
     // 3. Lumières
     if (options.vue === 'inclinee') {
-        addToScene(scene, createHemisphericLight([0, 1, 0], 0.8))
-        addToScene(scene, createDirectionalLight([-0.4, -1, -0.3], 0.8))
+        // Ciel : lumière d'ambiance douce, plus claire en haut qu'en bas, sans reflet.
+        const ciel = createHemisphericLight([0, 1, 0], ambiance.lumiereCiel.intensite)
+        ciel.diffuseColor = ambiance.lumiereCiel.couleur
+        ciel.groundColor = ambiance.eau.map((composante) => 0.3 + composante * 0.4) as Couleur
+        ciel.specularColor = [0, 0, 0]
+        addToScene(scene, ciel)
+        // Soleil : haut dans le ciel, derrière la caméra (la lumière avance vers +z, comme le regard).
+        // Les reflets partent donc loin de la caméra : ni éblouissement ni « pluie » de points brillants.
+        const soleil = createDirectionalLight(ambiance.soleil.direction, ambiance.soleil.intensite)
+        soleil.diffuse = ambiance.soleil.couleur
+        soleil.specular = [0.12, 0.1, 0.07]
+        addToScene(scene, soleil)
     }
 
     if (options.vue === 'dessus') {
@@ -198,7 +215,7 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
     } else {
         fondMarin.material = materiauColore(options.couleurFondMarin)
     }
-    fondMarin.position.set(0, options.vue === 'inclinee' ? -1 : -0.12, 0)
+    fondMarin.position.set(0, options.vue === 'inclinee' ? FOND_MARIN : -0.12, 0)
     addToScene(scene, fondMarin)
 
     const materiauDalle = materiauColore(COULEUR_DALLE)
@@ -208,7 +225,7 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
 
     let effets: Effets | null = null
     if (options.vue === 'inclinee') {
-        creerEau(moteur, scene, { taille: TAILLE_GRILLE + 4, couleur: COULEUR_EAU, niveau: NIVEAU_EAU })
+        creerEau(moteur, scene, { taille: TAILLE_GRILLE + 4, couleur: ambiance.eau, niveau: NIVEAU_EAU, fond: FOND_MARIN })
         effets = await creerEffets(moteur, scene)
 
         const materiauQuadrillage = materiauColore([0.02, 0.18, 0.24], [0.12, 0.8, 1])
@@ -253,6 +270,56 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
     /** Modèles 3D de bateaux placés : ils montent et descendent avec la vague. */
     const bateauxFlottants: { identifiant: string, racine: SceneNode, hauteurRepos: number, x: number, z: number }[] = []
   
+    // Décors de la carte (îles, rochers, bouées, modèles 3D) : posés sur la mer, ils suivent les vagues.
+    const decorsFlottants: { racine: SceneNode, x: number, z: number, reposY: number }[] = []
+    if (options.vue === 'inclinee' && options.carte) {
+        const sable = materiauColore([0.86, 0.76, 0.52])
+        const vegetation = materiauColore([0.2, 0.52, 0.26])
+        const roche = materiauColore([0.4, 0.42, 0.46])
+        const rouge = materiauColore([0.85, 0.2, 0.15], [0.2, 0.03, 0.02])
+        const blanc = materiauColore([0.95, 0.95, 0.92], [0.15, 0.15, 0.15])
+        const poser = (maillage: Mesh, x: number, y: number, z: number): Mesh => {
+            maillage.position.set(x, y, z)
+            addToScene(scene, maillage)
+            return maillage
+        }
+        for (const decor of options.carte.decors) {
+            const e = decor.echelle
+            const base = NIVEAU_EAU
+            if (decor.type === 'ile') {
+                const socle = poser(createCylinder(moteur, { height: 0.5 * e, diameterBottom: 1.5 * e, diameterTop: 0.95 * e, tessellation: 20 }), decor.x, base + 0.05 * e, decor.z)
+                socle.material = sable
+                const dome = poser(createSphere(moteur, { diameterX: 0.8 * e, diameterY: 0.5 * e, diameterZ: 0.8 * e, segments: 12 }), decor.x, base + 0.38 * e, decor.z)
+                dome.material = vegetation
+                decorsFlottants.push({ racine: socle, x: decor.x, z: decor.z, reposY: base + 0.05 * e }, { racine: dome, x: decor.x, z: decor.z, reposY: base + 0.38 * e })
+            } else if (decor.type === 'rocher') {
+                const rocher = poser(createSphere(moteur, { diameterX: 1.1 * e, diameterY: 0.7 * e, diameterZ: 0.9 * e, segments: 8 }), decor.x, base + 0.08 * e, decor.z)
+                rocher.material = roche
+                decorsFlottants.push({ racine: rocher, x: decor.x, z: decor.z, reposY: base + 0.08 * e })
+            } else if (decor.type === 'bouee') {
+                const corps = poser(createCylinder(moteur, { height: 0.5 * e, diameterBottom: 0.36 * e, diameterTop: 0.2 * e, tessellation: 12 }), decor.x, base + 0.15 * e, decor.z)
+                corps.material = rouge
+                const tete = poser(createSphere(moteur, { diameter: 0.2 * e, segments: 8 }), decor.x, base + 0.45 * e, decor.z)
+                tete.material = blanc
+                decorsFlottants.push({ racine: corps, x: decor.x, z: decor.z, reposY: base + 0.15 * e }, { racine: tete, x: decor.x, z: decor.z, reposY: base + 0.45 * e })
+            } else {
+                try {
+                    const asset = await loadGltf(moteur, `${options.carte.base}${decor.fichier}`)
+                    const racine = asset.entities[0]
+                    if (!racine) continue
+                    racine.scaling.set(racine.scaling.x * e, racine.scaling.y * e, racine.scaling.z * e)
+                    racine.rotation.y = decor.rotation
+                    addToScene(scene, asset)
+                    racine.position.set(decor.x, decor.y, decor.z)
+                    decorsFlottants.push({ racine, x: decor.x, z: decor.z, reposY: decor.y })
+                } catch (erreur) {
+                    // Un modèle de décor manquant ne doit pas empêcher de jouer.
+                    console.warn(`[cartes] décor ${decor.fichier} : chargement impossible`, erreur)
+                }
+            }
+        }
+    }
+
     const materiauBateau = materiauColore([0.25, 0.80, 0.82])
     const materiauTouche = materiauColore([0.9, 0.15, 0.1], [0.5, 0.05, 0.02])
     const materiauRate = materiauColore([0.95, 0.95, 0.95], [0.25, 0.25, 0.25])
@@ -330,6 +397,8 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
         centreY: number
         centreZ: number
         axeLongX: boolean
+        /** Orientation du modèle juste après chargement : point de départ de chaque pose. */
+        quaternionInitial: Quat
     }>()
     for (const modele of FLOTTE) {
         const config = CONFIG_MODELES[modele.identifiant]!
@@ -355,6 +424,12 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
             centreY: (limites.min[1] + limites.max[1]) / 2,
             centreZ: (limites.min[2] + limites.max[2]) / 2,
             axeLongX: largeurX >= largeurZ,
+            quaternionInitial: [
+                racine.rotationQuaternion.x,
+                racine.rotationQuaternion.y,
+                racine.rotationQuaternion.z,
+                racine.rotationQuaternion.w,
+            ],
         })
     }
 
@@ -365,6 +440,8 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
         position: Vec3
         pivot: Vec3
         quaternionBase: Quat
+        /** Emplacement du bateau : sert à savoir s'il a changé entre deux appels de definirBateaux. */
+        signature: string
     }
     const bateauxPoses = new Map<string, BateauPose>()
     const naufrages = new Map<string, { demarre: boolean, temps: number }>()
@@ -435,6 +512,9 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
             if (survolActuel) maillageSurvol.position.y = 0.02 + hauteurVague(survolActuel.x, survolActuel.z, tempsVagues)
             for (const element of apercuActif) {
                 element.maillage.position.y = element.hauteurRepos + hauteurVague(element.x, element.z, tempsVagues)
+            }
+            for (const decor of decorsFlottants) {
+                decor.racine.position.y = decor.reposY + hauteurVague(decor.x, decor.z, tempsVagues)
             }
             for (const bateau of bateauxFlottants) {
                 poserBateau(bateau.identifiant, hauteurVague(bateau.x, bateau.z, tempsVagues))
@@ -554,8 +634,8 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
             modelesBateaux.forEach(({ racine }) => setSubtreeVisible(racine, false))
             casesAvecModele.clear()
             bateauxFlottants.length = 0
+            const anciennesPoses = new Map(bateauxPoses)
             bateauxPoses.clear()
-            naufrages.clear()
             for (const bateau of bateaux) {
                 const modele = modelesBateaux.get(bateau.identifiant)
                 if (!modele) continue
@@ -566,7 +646,7 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
                         casesAvecModele.add(`${colonne},${ligne}`)
                     }
                 }
-                const { racine, centreX, centreY, centreZ, axeLongX } = modele
+                const { racine, centreX, centreY, centreZ, axeLongX, quaternionInitial } = modele
                 const decalage = (bateau.longueur - 1) / 2
                 const centre = bateau.horizontal
                     ? caseVersMonde({ colonne: bateau.colonne + decalage, ligne: bateau.ligne })
@@ -586,6 +666,10 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
                     config.y,
                     centre.z - centreModeleZ,
                 )
+                // On repart TOUJOURS de l'orientation d'origine du modèle. Sans cela, `rotation.y = …` décompose
+                // l'orientation précédente en angles d'Euler : au-delà de 90° la décomposition bascule (x et z
+                // valent π) et le bateau se retrouvait retourné à chaque nouveau bateau posé.
+                racine.rotationQuaternion.set(...quaternionInitial)
                 racine.rotation.y = rotation
                 racine.rotation.z = 0
                 const quaternion = racine.rotationQuaternion
@@ -597,9 +681,16 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
                     position: [centre.x - centreModeleX, config.y, centre.z - centreModeleZ],
                     pivot: [centre.x, config.y + centreY, centre.z],
                     quaternionBase: [quaternion.x, quaternion.y, quaternion.z, quaternion.w],
+                    signature: `${bateau.colonne},${bateau.ligne},${bateau.horizontal},${bateau.longueur}`,
                 })
                 poserBateau(bateau.identifiant)
             }
+            // Un naufrage déjà joué est conservé tant que le bateau n'a pas bougé : sinon, à chaque nouveau
+            // bateau coulé, les précédents remonteraient puis couleraient une seconde fois.
+            naufrages.forEach((_, identifiant) => {
+                const pose = bateauxPoses.get(identifiant)
+                if (!pose || pose.signature !== anciennesPoses.get(identifiant)?.signature) naufrages.delete(identifiant)
+            })
             for (let ligne = 0; ligne < TAILLE_GRILLE; ligne++) {
                 for (let colonne = 0; colonne < TAILLE_GRILLE; colonne++) {
                     definirEtatCase(colonne, ligne, etatsCases[ligne]![colonne]!)

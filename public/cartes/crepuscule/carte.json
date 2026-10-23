@@ -1,0 +1,51 @@
+{
+    "nom": "Le crépuscule",
+    "description": "Soleil couchant orangé sur une mer profonde.",
+    "ambiance": {
+        "eau": [
+            0.07,
+            0.22,
+            0.42
+        ],
+        "ciel": [
+            0.32,
+            0.2,
+            0.4
+        ],
+        "lumiereCiel": {
+            "couleur": [
+                0.8,
+                0.65,
+                0.9
+            ],
+            "intensite": 0.7
+        },
+        "soleil": {
+            "direction": [
+                -0.2,
+                -0.4,
+                0.9
+            ],
+            "couleur": [
+                1,
+                0.6,
+                0.35
+            ],
+            "intensite": 1.05
+        }
+    },
+    "decors": [
+        {
+            "type": "bouee",
+            "x": 6,
+            "z": -5,
+            "echelle": 1
+        },
+        {
+            "type": "ile",
+            "x": -6,
+            "z": 4.5,
+            "echelle": 1.1
+        }
+    ]
+}
