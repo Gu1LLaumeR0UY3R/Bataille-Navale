@@ -1,0 +1,11 @@
+Model Information:
+* title:	animated water surface
+* source:	https://sketchfab.com/3d-models/animated-water-surface-57a4890ecadf483bb6d94b009cb4b7dd
+* author:	Krivolap Denis (https://sketchfab.com/krivolap.denis)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "animated water surface" (https://sketchfab.com/3d-models/animated-water-surface-57a4890ecadf483bb6d94b009cb4b7dd) by Krivolap Denis (https://sketchfab.com/krivolap.denis) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

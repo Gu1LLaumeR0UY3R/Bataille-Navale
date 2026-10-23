@@ -13,13 +13,14 @@ import {
     createStandardMaterial,
     disposeEngine,
     disposeScene,
+    playAnimation,
     registerScene,
     resizeEngine,
     startEngine,
     stopEngine,
 } from '@babylonjs/lite'
 import { TAILLE_CASE } from './boardGeometry.ts'
-import { MODELES, chargerModele, type ModeleCharge } from './modeles.ts'
+import { MODELES, OCEAN_ANIME, chargerModele, type ModeleCharge } from './modeles.ts'
 
 export interface ModeleEssai {
     identifiant: string
@@ -60,7 +61,18 @@ export async function creerSceneEssai(toile: HTMLCanvasElement): Promise<SceneEs
         modelesCharges.push(await chargerModele(moteur, definition))
     }
 
-    const ocean = modelesCharges.find((modele) => modele.definition.type === 'ocean')
+    // Océan animé : facultatif. S'il manque ou ne se charge pas, on garde l'océan statique (ocean.glb).
+    let oceanAnime: ModeleCharge | undefined
+    try {
+        oceanAnime = await chargerModele(moteur, OCEAN_ANIME)
+        console.info(`[Océan animé] chargé, ${oceanAnime.animations.length} animation(s) dans le fichier.`)
+        oceanAnime.animations.forEach((groupe) =>
+            console.info(`[Océan animé] « ${groupe.name} » : ${groupe.duration.toFixed(1)} s, ${groupe.targetedAnimations.length} cible(s)`))
+    } catch (erreur) {
+        console.warn('[Océan animé] ignoré, océan statique utilisé :', erreur)
+    }
+
+    const ocean = oceanAnime ?? modelesCharges.find((modele) => modele.definition.type === 'ocean')
     if (ocean) addToScene(scene, ocean.pivot)
 
     const bateaux = modelesCharges.filter((modele) => modele.definition.type === 'bateau')
@@ -85,6 +97,7 @@ export async function creerSceneEssai(toile: HTMLCanvasElement): Promise<SceneEs
 
     await registerScene(scene)
     await startEngine(moteur)
+    ocean?.animations.forEach(playAnimation)
 
     resizeEngine(moteur)
     const observateurTaille = new ResizeObserver(() => resizeEngine(moteur))

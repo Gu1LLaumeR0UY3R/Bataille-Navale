@@ -7,6 +7,7 @@ import {
     createTransformNode,
     getContainerMeshes,
     loadGltf,
+    type AnimationGroup,
     type EngineContext,
     type SceneNode,
     type TransformNode,
@@ -33,12 +34,27 @@ export const MODELES: readonly DefinitionModele[] = [
     { identifiant: 'torpilleur', fichier: 'patrouilleur-hurricane.glb', nom: 'Torpilleur (USS Hurricane PC-3)', type: 'bateau', cases: 2 },
 ]
 
+/**
+ * Océan animé à essayer (Sketchfab, Kryvolap Denys). Fichiers à placer dans public/modeles/Ocean/ :
+ * scene.gltf + scene.bin (garder les deux ensemble : le .gltf référence le .bin par son nom).
+ * Environ 245 000 triangles : à tester sur la page d'essai avant tout usage dans le jeu.
+ */
+export const OCEAN_ANIME: DefinitionModele = {
+    identifiant: 'ocean_anime',
+    fichier: 'Ocean/scene.gltf',
+    nom: 'Océan animé (animated water surface)',
+    type: 'ocean',
+    cases: 40,
+}
+
 /** Un modèle chargé : `pivot` est le nœud à ajouter à la scène, à déplacer et à tourner. */
 export interface ModeleCharge {
     definition: DefinitionModele
     pivot: TransformNode
     /** Rotation autour de l'axe vertical qui aligne le grand axe du modèle sur +x (en radians). */
     yawAlignement: number
+    /** Animations contenues dans le fichier (vide si le modèle n'est pas animé). */
+    animations: AnimationGroup[]
 }
 
 /** Part de la longueur d'une case occupée par un bateau (laisse un petit vide entre deux bateaux voisins). */
@@ -107,5 +123,5 @@ export async function chargerModele(moteur: EngineContext, definition: Definitio
         pivot.position.set(0, ALTITUDE_OCEAN - (taille[1]! / 2) * echelleVerticale, 0)
     }
 
-    return { definition, pivot, yawAlignement }
+    return { definition, pivot, yawAlignement, animations: conteneur.animationGroups ?? [] }
 }

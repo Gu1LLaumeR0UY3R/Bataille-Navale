@@ -5,6 +5,7 @@ Ils ont été adaptés pour le jeu (mise à l'échelle, orientation, centrage).
 
 | Modèle | Fichier | Créateur | Source | Licence |
 |---|---|---|---|---|
+| Animated water surface | `public/modeles/Ocean/scene.gltf` + `scene.bin` | Kryvolap Denys | https://sketchfab.com/3d-models/animated-water-surface-57a4890ecadf483bb6d94b009cb4b7dd | CC-BY (version à confirmer sur la page Sketchfab) |
 | Ocean | `public/modeles/ocean.glb` | Poly by Google | https://poly.pizza/m/faUostvShTI | [CC-BY 3.0](https://creativecommons.org/licenses/by/3.0/) |
 | Submarine | `public/modeles/sous-marin.glb` | Poly by Google | https://poly.pizza/m/8PgPdFGg3MO | [CC-BY 3.0](https://creativecommons.org/licenses/by/3.0/) |
 | low poly battleship | `public/modeles/cuirasse-lowpoly.glb` | angelo raffaele Catalano | https://poly.pizza/m/cqV6mUkn7Ow | [CC-BY 3.0](https://creativecommons.org/licenses/by/3.0/) |
