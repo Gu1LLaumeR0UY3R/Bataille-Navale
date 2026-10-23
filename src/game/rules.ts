@@ -18,13 +18,21 @@ export function estDansGrille(caseGrille: CoordCase): boolean {
         caseGrille.ligne >= 0 && caseGrille.ligne < TAILLE_GRILLE
 }
 
-/** Un bateau peut-il être posé ici ? (dans la grille, sans chevaucher les autres) */
-export function peutPlacer(bateau: Pick<Bateau, 'colonne' | 'ligne' | 'longueur' | 'horizontal'>, autres: readonly Bateau[]): boolean {
+/**
+ * Un bateau peut-il être posé ici ? (dans la grille, sans chevaucher les autres, hors cases bloquées)
+ * `bloquees` : cases peintes dans l'éditeur de cartes, au format « colonne,ligne » (voir cleCase dans carte.ts).
+ */
+export function peutPlacer(
+    bateau: Pick<Bateau, 'colonne' | 'ligne' | 'longueur' | 'horizontal'>,
+    autres: readonly Bateau[],
+    bloquees: ReadonlySet<string> = new Set(),
+): boolean {
     const cases = casesBateau(bateau)
 
     // "every" : une méthode de la classe Array qui retourne vrai si 
     // toutes les valeurs contenues dans Array passent le test donné en paramètre 
     if (!cases.every(estDansGrille)) return false
+    if (cases.some((caseGrille) => bloquees.has(`${caseGrille.colonne},${caseGrille.ligne}`))) return false
     const casesOccupees = new Set(autres.flatMap(casesBateau).map((caseGrille) => `${caseGrille.colonne},${caseGrille.ligne}`))
     return cases.every((caseGrille) => !casesOccupees.has(`${caseGrille.colonne},${caseGrille.ligne}`))
 }
@@ -93,7 +101,7 @@ export function grilleAvecTirs(bateaux: readonly Bateau[], tirs: readonly CoordC
 }
 
 /** Place toute la flotte au hasard (pratique pour tester, et pour l'adversaire de la démo locale). */
-export function placerFlotteAleatoirement(modeles: readonly ModeleBateau[]): Bateau[] {
+export function placerFlotteAleatoirement(modeles: readonly ModeleBateau[], bloquees: ReadonlySet<string> = new Set()): Bateau[] {
     const bateaux: Bateau[] = []
     for (const modele of modeles) {
         for (let tentative = 0; tentative < 500; tentative++) {
@@ -104,11 +112,16 @@ export function placerFlotteAleatoirement(modeles: readonly ModeleBateau[]): Bat
                 longueur: modele.longueur,
                 horizontal,
             }
-            if (peutPlacer(candidat, bateaux)) {
+            if (peutPlacer(candidat, bateaux, bloquees)) {
                 bateaux.push({ ...modele, ...candidat })
                 break
             }
         }
     }
     return bateaux
+}
+
+/** Un tir est-il autorisé ? Pas hors de la grille, pas sur une case bloquée. */
+export function tirAutorise(tir: CoordCase, bloquees: ReadonlySet<string> = new Set()): boolean {
+    return estDansGrille(tir) && !bloquees.has(`${tir.colonne},${tir.ligne}`)
 }
