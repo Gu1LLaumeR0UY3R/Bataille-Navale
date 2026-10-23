@@ -332,6 +332,8 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
         centreY: number
         centreZ: number
         axeLongX: boolean
+        /** Orientation du modèle juste après chargement : point de départ de chaque pose. */
+        quaternionInitial: Quat
     }>()
     for (const modele of FLOTTE) {
         const config = CONFIG_MODELES[modele.identifiant]!
@@ -357,6 +359,12 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
             centreY: (limites.min[1] + limites.max[1]) / 2,
             centreZ: (limites.min[2] + limites.max[2]) / 2,
             axeLongX: largeurX >= largeurZ,
+            quaternionInitial: [
+                racine.rotationQuaternion.x,
+                racine.rotationQuaternion.y,
+                racine.rotationQuaternion.z,
+                racine.rotationQuaternion.w,
+            ],
         })
     }
 
@@ -367,6 +375,8 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
         position: Vec3
         pivot: Vec3
         quaternionBase: Quat
+        /** Emplacement du bateau : sert à savoir s'il a changé entre deux appels de definirBateaux. */
+        signature: string
     }
     const bateauxPoses = new Map<string, BateauPose>()
     const naufrages = new Map<string, { demarre: boolean, temps: number }>()
@@ -556,8 +566,8 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
             modelesBateaux.forEach(({ racine }) => setSubtreeVisible(racine, false))
             casesAvecModele.clear()
             bateauxFlottants.length = 0
+            const anciennesPoses = new Map(bateauxPoses)
             bateauxPoses.clear()
-            naufrages.clear()
             for (const bateau of bateaux) {
                 const modele = modelesBateaux.get(bateau.identifiant)
                 if (!modele) continue
@@ -568,7 +578,7 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
                         casesAvecModele.add(`${colonne},${ligne}`)
                     }
                 }
-                const { racine, centreX, centreY, centreZ, axeLongX } = modele
+                const { racine, centreX, centreY, centreZ, axeLongX, quaternionInitial } = modele
                 const decalage = (bateau.longueur - 1) / 2
                 const centre = bateau.horizontal
                     ? caseVersMonde({ colonne: bateau.colonne + decalage, ligne: bateau.ligne })
@@ -588,6 +598,10 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
                     config.y,
                     centre.z - centreModeleZ,
                 )
+                // On repart TOUJOURS de l'orientation d'origine du modèle. Sans cela, `rotation.y = …` décompose
+                // l'orientation précédente en angles d'Euler : au-delà de 90° la décomposition bascule (x et z
+                // valent π) et le bateau se retrouvait retourné à chaque nouveau bateau posé.
+                racine.rotationQuaternion.set(...quaternionInitial)
                 racine.rotation.y = rotation
                 racine.rotation.z = 0
                 const quaternion = racine.rotationQuaternion
@@ -599,9 +613,16 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
                     position: [centre.x - centreModeleX, config.y, centre.z - centreModeleZ],
                     pivot: [centre.x, config.y + centreY, centre.z],
                     quaternionBase: [quaternion.x, quaternion.y, quaternion.z, quaternion.w],
+                    signature: `${bateau.colonne},${bateau.ligne},${bateau.horizontal},${bateau.longueur}`,
                 })
                 poserBateau(bateau.identifiant)
             }
+            // Un naufrage déjà joué est conservé tant que le bateau n'a pas bougé : sinon, à chaque nouveau
+            // bateau coulé, les précédents remonteraient puis couleraient une seconde fois.
+            naufrages.forEach((_, identifiant) => {
+                const pose = bateauxPoses.get(identifiant)
+                if (!pose || pose.signature !== anciennesPoses.get(identifiant)?.signature) naufrages.delete(identifiant)
+            })
             for (let ligne = 0; ligne < TAILLE_GRILLE; ligne++) {
                 for (let colonne = 0; colonne < TAILLE_GRILLE; colonne++) {
                     definirEtatCase(colonne, ligne, etatsCases[ligne]![colonne]!)
