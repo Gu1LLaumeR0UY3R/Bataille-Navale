@@ -7,11 +7,13 @@ import PlacementBateaux from './components/ShipPlacement.vue'
 import EcranAccueil from './components/EcranAccueil.vue'
 import EcranOptions from './components/EcranOptions.vue'
 import EcranMode from './components/EcranMode.vue'
+import EcranCartes from './components/EcranCartes.vue'
+import type { Carte } from './maps/types.ts'
 import { bateauSurCase, casesBateau, tousCoules, grilleAvecTirs, placerFlotteAleatoirement, resoudreTir } from './game/rules.ts'
 import { creerIA, DIFFICULTES, type Difficulte, type IA } from './game/ai.ts'
 import { FLOTTE, type CoordCase, type Bateau } from './game/types.ts'
 
-type Etape = 'accueil' | 'options' | 'mode' | 'placement' | 'en_cours' | 'terminee'
+type Etape = 'accueil' | 'options' | 'mode' | 'cartes' | 'placement' | 'en_cours' | 'terminee'
 
 const etape = ref<Etape>('accueil')
 const mesBateaux = ref<Bateau[]>([])
@@ -22,6 +24,7 @@ const aMoiDeJouer = ref(true)
 const message = ref('')
 const gagnant = ref<'moi' | 'adversaire' | null>(null)
 const difficulte = ref<Difficulte>('medium')
+const carte = ref<Carte | null>(null)
 const zoneEtape = ref<HTMLElement | null>(null)
 let ia: IA | null = null
 
@@ -94,7 +97,8 @@ function terminerPartie(vainqueur: 'moi' | 'adversaire') {
 
 function recommencer() {
     clearTimeout(minuterieAdverse)
-    etape.value = 'placement'
+    // Chaque partie commence par le choix d'une carte.
+    etape.value = 'cartes'
     afficherEtape()
 }
 
@@ -112,7 +116,7 @@ const NIVEAUX: Record<Difficulte, { libelle: string, description: string }> = {
     hard: { libelle: 'Difficile', description: 'Chasse méthodique' },
 }
 const libelleEtape = computed(() => ({
-    accueil: '', options: 'Options', mode: 'Nouvelle partie', placement: 'Préparation',
+    accueil: '', options: 'Options', mode: 'Nouvelle partie', cartes: 'Choix de la carte', placement: 'Préparation',
     en_cours: 'Partie en cours', terminee: 'Partie terminée',
 })[etape.value])
 </script>
@@ -134,7 +138,8 @@ const libelleEtape = computed(() => ({
 
         <div ref="zoneEtape" class="zone-etape">
             <EcranOptions v-if="etape === 'options'" @retour="etape = 'accueil'" />
-            <EcranMode v-else-if="etape === 'mode'" @ia="etape = 'placement'" @retour="etape = 'accueil'" />
+            <EcranMode v-else-if="etape === 'mode'" @ia="etape = 'cartes'" @retour="etape = 'accueil'" />
+            <EcranCartes v-else-if="etape === 'cartes'" @choisir="carte = $event; etape = 'placement'" @retour="etape = 'mode'" />
 
             <template v-else-if="etape === 'placement'">
                 <section class="niveau" aria-labelledby="titre-niveau">
@@ -146,8 +151,8 @@ const libelleEtape = computed(() => ({
                         </label>
                     </div>
                 </section>
-                <PlacementBateaux @valider="demarrerPartie" />
-                <button type="button" class="retour" @click="allerA('mode')">← Changer de mode</button>
+                <PlacementBateaux :carte="carte" @valider="demarrerPartie" />
+                <button type="button" class="retour" @click="allerA('cartes')">← Changer de carte{{ carte ? ` (${carte.nom})` : '' }}</button>
             </template>
 
             <template v-else>
@@ -159,11 +164,11 @@ const libelleEtape = computed(() => ({
                 <section class="grilles">
                     <figure class="carte-grille">
                         <figcaption><span class="etiquette-grille">VOTRE FLOTTE</span><strong>Le port d’attache</strong><small>{{ mesBateaux.length }} navires en mer</small></figcaption>
-                        <Grille3D :cases="maGrille" :bateaux="mesBateaux" />
+                        <Grille3D :cases="maGrille" :bateaux="mesBateaux" :carte="carte" />
                     </figure>
                     <figure class="carte-grille" :class="{ 'cible-active': etape === 'en_cours' && aMoiDeJouer }">
                         <figcaption><span class="etiquette-grille">ZONE ENNEMIE</span><strong>Le large inconnu</strong><small>{{ etape === 'en_cours' ? (aMoiDeJouer ? 'Choisissez une case pour tirer' : 'L’adversaire joue…') : 'Fin de la partie' }}</small></figcaption>
-                        <Grille3D :cases="grilleAdverse" :bateaux="bateauxAdversesCoules" :interactif="etape === 'en_cours' && aMoiDeJouer" @clic-case="tirer" />
+                        <Grille3D :cases="grilleAdverse" :bateaux="bateauxAdversesCoules" :interactif="etape === 'en_cours' && aMoiDeJouer" @clic-case="tirer" :carte="carte" />
                     </figure>
                 </section>
                 <div v-if="etape === 'terminee'" class="fin">
