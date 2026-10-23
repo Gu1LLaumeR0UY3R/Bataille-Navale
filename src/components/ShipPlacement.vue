@@ -5,7 +5,9 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import Grille3D from './BoardView3D.vue'
 import { grilleDepuisBateaux, peutPlacer, placerFlotteAleatoirement, casesBateau } from '../game/rules.ts'
 import { FLOTTE, type CoordCase, type Bateau } from '../game/types.ts'
+import type { Carte } from '../maps/types.ts'
 
+defineProps<{ carte?: Carte | null }>()
 const emettre = defineEmits<{ valider: [bateaux: Bateau[]] }>()
 
 const bateauxPlaces = ref<Bateau[]>([])
@@ -71,6 +73,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', surTouche))
             </div>
             <div class="grille-placement">
                 <Grille3D
+                    :carte="carte"
                     :cases="cases"
                     :bateaux="bateauxPlaces"
                     :apercu="apercu"

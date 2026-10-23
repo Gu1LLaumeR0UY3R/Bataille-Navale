@@ -1,0 +1,57 @@
+{
+    "nom": "L'aube",
+    "description": "Lumière rasante et ciel rosé, quelques bouées.",
+    "ambiance": {
+        "eau": [
+            0.1,
+            0.36,
+            0.52
+        ],
+        "ciel": [
+            0.55,
+            0.4,
+            0.52
+        ],
+        "lumiereCiel": {
+            "couleur": [
+                1,
+                0.85,
+                0.85
+            ],
+            "intensite": 0.75
+        },
+        "soleil": {
+            "direction": [
+                0.55,
+                -0.5,
+                0.6
+            ],
+            "couleur": [
+                1,
+                0.72,
+                0.55
+            ],
+            "intensite": 0.95
+        }
+    },
+    "decors": [
+        {
+            "type": "bouee",
+            "x": -6,
+            "z": -4.5,
+            "echelle": 1
+        },
+        {
+            "type": "bouee",
+            "x": 6,
+            "z": 2,
+            "echelle": 1
+        },
+        {
+            "type": "bouee",
+            "x": -5.8,
+            "z": 5.5,
+            "echelle": 1
+        }
+    ]
+}

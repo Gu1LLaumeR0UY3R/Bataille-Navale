@@ -5,6 +5,7 @@
 import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { creerSceneGrille, type SceneGrille } from '../engine/boardScene.ts'
 import type { CoordCase, EtatCase, Couleur, Bateau } from '../game/types.ts'
+import type { Carte } from '../maps/types.ts'
 
 const proprietes = withDefaults(
     defineProps<{
@@ -14,8 +15,9 @@ const proprietes = withDefaults(
         apercu?: { cases: CoordCase[]; valide: boolean } | null
         bateaux?: Bateau[]
         couleurFondMarin?: Couleur
+        carte?: Carte | null
     }>(),
-    { vue: 'inclinee', interactif: false, apercu: null, bateaux: () => [], couleurFondMarin: () => [1.0, 0.2, 0.2] },
+    { vue: 'inclinee', interactif: false, apercu: null, bateaux: () => [], couleurFondMarin: () => [1.0, 0.2, 0.2], carte: null },
 )
 
 const emettre = defineEmits<{
@@ -41,6 +43,7 @@ onMounted(async () => {
             vue: proprietes.vue,
             couleurCase: null,
             couleurFondMarin: proprietes.couleurFondMarin,
+            carte: proprietes.carte,
         })
 
         if (estDemonte) {
