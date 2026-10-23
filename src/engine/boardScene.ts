@@ -18,6 +18,7 @@ import {
     disposeScene,
     enableOrthographicCamera,
     loadGltf,
+    onBeforeRender,
     registerScene,
     resizeEngine,
     setSubtreeVisible,
@@ -31,6 +32,12 @@ import {
 import { FLOTTE, TAILLE_GRILLE, type Bateau, type CoordCase, type EtatCase, type Couleur } from '../game/types.ts'
 import { TAILLE_CASE, caseVersMonde } from './boardGeometry.ts'
 import { ecranVersCase } from './cellPicking.ts'
+import { hauteurVague, penteVague } from './vagues.ts'
+
+/** Couleur des dalles de mer (RGB, 0 à 1). */
+const COULEUR_DALLE: Couleur = [0.07, 0.62, 0.72]
+/** Les dalles s'inclinent avec la pente de la vague (1 = normal, 0 = pas d'inclinaison, -1 = inversé). */
+const INCLINAISON_DALLES = 1
 
 export interface OptionsSceneGrille {
     /** 'inclinee' : vue en perspective inclinée (les grilles de jeu). 'dessus' : vue de dessus (placement). */
@@ -159,10 +166,27 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
     fondMarin.position.set(0, -0.12, 0)
     addToScene(scene, fondMarin)
 
-    let materiauDalle = materiauColore([0.1, 0.35, 0.6])
+    let materiauDalle = materiauColore(COULEUR_DALLE)
     if (options.vue === 'dessus') {
-        materiauDalle = materiauColore([0.1, 0.35, 0.6], [0.1, 0.1, 0.2])
+        materiauDalle = materiauColore(COULEUR_DALLE, [0.1, 0.1, 0.2])
     }
+
+    // Vagues : seulement en vue inclinée (les grilles de jeu). En vue de dessus (placement), l'eau reste calme.
+    const AVEC_VAGUES = options.vue === 'inclinee'
+    let tempsVagues = 0
+    interface Cellule {
+        x: number
+        z: number
+        dalle: Mesh
+        /** Marqueurs posés sur la case, avec leur hauteur de repos. */
+        marqueurs: { maillage: Mesh, hauteurRepos: number }[]
+    }
+    const cellules: Cellule[] = []
+    /** Surbrillance et aperçu : montrés puis cachés, ils suivent la vague tant qu'ils sont affichés. */
+    let survolActuel: { x: number, z: number } | null = null
+    const apercuActif: { maillage: Mesh, x: number, z: number, hauteurRepos: number }[] = []
+    /** Modèles 3D de bateaux placés : ils montent et descendent avec la vague. */
+    const bateauxFlottants: { racine: SceneNode, hauteurRepos: number, x: number, z: number }[] = []
   
     const materiauBateau = materiauColore([0.25, 0.80, 0.82])
     const materiauTouche = materiauColore([0.9, 0.15, 0.1], [0.5, 0.05, 0.02])
@@ -193,24 +217,29 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
             dalle.material = materiauDalle
             dalle.position.set(mondeX, -0.05, mondeZ)
             addToScene(scene, dalle)
+            const cellule: Cellule = { x: mondeX, z: mondeZ, dalle, marqueurs: [] }
+            cellules.push(cellule)
 
             const maillageBateau = masquer(createBox(moteur, { width: 0.86, height: 0.4, depth: 0.86 }))
             maillageBateau.material = materiauBateau
             maillageBateau.position.set(mondeX, 0.2, mondeZ)
             addToScene(scene, maillageBateau)
             marqueursBateau[ligne]!.push(maillageBateau)
+            cellule.marqueurs.push({ maillage: maillageBateau, hauteurRepos: 0.2 })
 
             const maillageTouche = masquer(createCylinder(moteur, { height: 0.3, diameter: 0.44, tessellation: 16 }))
             maillageTouche.material = materiauTouche
             maillageTouche.position.set(mondeX, 0.15, mondeZ)
             addToScene(scene, maillageTouche)
             marqueursTouche[ligne]!.push(maillageTouche)
+            cellule.marqueurs.push({ maillage: maillageTouche, hauteurRepos: 0.15 })
 
             const maillageRate = masquer(createCylinder(moteur, { height: 0.1, diameter: 0.34, tessellation: 16 }))
             maillageRate.material = materiauRate
             maillageRate.position.set(mondeX, 0.05, mondeZ)
             addToScene(scene, maillageRate)
             marqueursRate[ligne]!.push(maillageRate)
+            cellule.marqueurs.push({ maillage: maillageRate, hauteurRepos: 0.05 })
         }
     }
 
@@ -263,6 +292,29 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
     // 5. Enregistrement (compile les pipelines GPU) puis démarrage de la boucle de rendu
     await registerScene(scene)
     await startEngine(moteur)
+
+    // Animation des vagues : une fois par image, on recalcule les hauteurs depuis la position de repos
+    // (jamais depuis la position précédente : les décalages ne s'accumulent donc pas).
+    if (AVEC_VAGUES) {
+        onBeforeRender(scene, (deltaMs) => {
+            tempsVagues += deltaMs / 1000
+            for (const cellule of cellules) {
+                const hauteur = hauteurVague(cellule.x, cellule.z, tempsVagues)
+                const pente = penteVague(cellule.x, cellule.z, tempsVagues)
+                cellule.dalle.position.y = -0.05 + hauteur
+                cellule.dalle.rotation.z = pente.x * INCLINAISON_DALLES
+                cellule.dalle.rotation.x = -pente.z * INCLINAISON_DALLES
+                for (const { maillage, hauteurRepos } of cellule.marqueurs) maillage.position.y = hauteurRepos + hauteur
+            }
+            if (survolActuel) maillageSurvol.position.y = 0.02 + hauteurVague(survolActuel.x, survolActuel.z, tempsVagues)
+            for (const element of apercuActif) {
+                element.maillage.position.y = element.hauteurRepos + hauteurVague(element.x, element.z, tempsVagues)
+            }
+            for (const bateau of bateauxFlottants) {
+                bateau.racine.position.y = bateau.hauteurRepos + hauteurVague(bateau.x, bateau.z, tempsVagues)
+            }
+        })
+    }
 
     // Redimensionnement : le canvas suit la taille de son conteneur CSS
     resizeEngine(moteur)
@@ -323,6 +375,7 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
     }
 
     const effacerApercu = () => {
+        apercuActif.length = 0
         lotValide.forEach((maillage) => setSubtreeVisible(maillage, false))
         lotInvalide.forEach((maillage) => setSubtreeVisible(maillage, false))
     }
@@ -340,6 +393,7 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
         definirBateaux(bateaux) {
             modelesBateaux.forEach(({ racine }) => setSubtreeVisible(racine, false))
             casesAvecModele.clear()
+            bateauxFlottants.length = 0
             for (const bateau of bateaux) {
                 const modele = modelesBateaux.get(bateau.identifiant)
                 if (!modele) continue
@@ -372,6 +426,7 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
                 )
                 racine.rotation.y = rotation
                 racine.rotation.z = 0
+                bateauxFlottants.push({ racine, hauteurRepos: config.y, x: centre.x, z: centre.z })
                 setSubtreeVisible(racine, true)
             }
             for (let ligne = 0; ligne < TAILLE_GRILLE; ligne++) {
@@ -382,11 +437,13 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
         },
         definirSurvol(caseGrille) {
             if (!caseGrille) {
+                survolActuel = null
                 setSubtreeVisible(maillageSurvol, false)
                 return
             }
             const { x, z } = caseVersMonde(caseGrille)
-            maillageSurvol.position.set(x, 0.02, z)
+            survolActuel = { x, z }
+            maillageSurvol.position.set(x, 0.02 + (AVEC_VAGUES ? hauteurVague(x, z, tempsVagues) : 0), z)
             setSubtreeVisible(maillageSurvol, true)
         },
         definirApercu(cases, valide) {
@@ -398,7 +455,8 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
                 if (caseGrille.colonne < 0 || caseGrille.colonne >= TAILLE_GRILLE ||
                         caseGrille.ligne < 0 || caseGrille.ligne >= TAILLE_GRILLE) return
                 const { x, z } = caseVersMonde(caseGrille)
-                maillage.position.set(x, 0.17, z)
+                maillage.position.set(x, 0.17 + (AVEC_VAGUES ? hauteurVague(x, z, tempsVagues) : 0), z)
+                if (AVEC_VAGUES) apercuActif.push({ maillage, x, z, hauteurRepos: 0.17 })
                 setSubtreeVisible(maillage, true)
             })
         },
