@@ -26,7 +26,6 @@ export interface DefinitionModele {
 
 /** Modèles utilisés par la page d'essai. L'association modèle ↔ bateau de la flotte reste à confirmer. */
 export const MODELES: readonly DefinitionModele[] = [
-    { identifiant: 'ocean', fichier: 'ocean.glb', nom: 'Océan', type: 'ocean', cases: 40 },
     { identifiant: 'porte_avions', fichier: 'porte-avions-lowpoly.glb', nom: 'Porte-avions (low poly aircraft carrier)', type: 'bateau', cases: 5 },
     { identifiant: 'croiseur', fichier: 'cuirasse-lowpoly.glb', nom: 'Croiseur (low poly battleship)', type: 'bateau', cases: 4 },
     { identifiant: 'contre_torpilleur', fichier: 'cuirasse-simple.glb', nom: 'Contre-torpilleur (Simple Battleship)', type: 'bateau', cases: 3 },
@@ -35,14 +34,13 @@ export const MODELES: readonly DefinitionModele[] = [
 ]
 
 /**
- * Océan animé à essayer (Sketchfab, Kryvolap Denys). Fichiers à placer dans public/modeles/Ocean/ :
- * scene.gltf + scene.bin (garder les deux ensemble : le .gltf référence le .bin par son nom).
- * Environ 245 000 triangles : à tester sur la page d'essai avant tout usage dans le jeu.
+ * Océan animé : l'océan de Poly by Google, auquel scripts/generer-ocean-anime.mjs a ajouté des vagues
+ * (morph targets + animation en boucle, enregistrés dans le fichier). Léger : environ 200 Ko, 800 triangles.
  */
 export const OCEAN_ANIME: DefinitionModele = {
     identifiant: 'ocean_anime',
-    fichier: 'Ocean/scene.gltf',
-    nom: 'Océan animé (animated water surface)',
+    fichier: 'ocean-anime.glb',
+    nom: 'Océan animé (Ocean, Poly by Google)',
     type: 'ocean',
     cases: 40,
 }

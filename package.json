@@ -8,7 +8,8 @@
         "preview": "vite preview",
         "typecheck": "vue-tsc --noEmit",
         "check:picking": "node --experimental-strip-types scripts/check-picking.ts",
-        "check:ai": "node --experimental-strip-types scripts/check-ai.ts"
+        "check:ai": "node --experimental-strip-types scripts/check-ai.ts",
+        "generer:ocean": "node scripts/generer-ocean-anime.mjs public/modeles/ocean-source.glb public/modeles/ocean-anime.glb"
     },
     "devEngines": {
         "packageManager": {
