@@ -1,0 +1,88 @@
+/* Thème global : mer ensoleillée, cuivre et sable. Les composants ne lisent que ces variables. */
+:root {
+    --bleu-marine: #082a45;
+    --bleu-marine-clair: #0d4a6b;
+    --craie: #fff9ea;
+    --attenue: #b3d6e2;
+    --ligne: rgb(255 240 205 / 22%);
+    --signal: #ff7a59;
+    --soleil: #ffc65a;
+    --menthe: #6fe0c5;
+    --panneau: rgb(7 38 63 / 62%);
+    --police-titres: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
+    --police-corps: 'Avenir Next', Avenir, system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+body {
+    margin: 0;
+    min-height: 100vh;
+    background:
+        radial-gradient(ellipse 60rem 32rem at 82% -6%, rgb(255 198 90 / 30%), transparent 70%),
+        linear-gradient(180deg, #1b78a1 0%, #0f5a82 38%, #0a3f63 72%, #082a45 100%) fixed;
+    color: var(--craie);
+    font-family: var(--police-corps);
+    line-height: 1.5;
+}
+h1, h2, h3, p {
+    overflow-wrap: anywhere;
+}
+button {
+    font: inherit;
+    color: var(--craie);
+    background: rgb(255 249 234 / 10%);
+    border: 1px solid var(--ligne);
+    border-radius: 12px;
+    padding: 0.7rem 1rem;
+    cursor: pointer;
+    text-align: center;
+    transition: transform 180ms ease, background 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+button:hover:not(:disabled) {
+    transform: translateY(-2px);
+    border-color: rgb(255 240 205 / 55%);
+    background: rgb(255 249 234 / 17%);
+}
+button:focus-visible,
+input:focus-visible {
+    outline: 3px solid var(--soleil);
+    outline-offset: 2px;
+}
+button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+.bouton-principal,
+button.principal {
+    border-color: transparent;
+    background: linear-gradient(135deg, #ffd27a, #ffa940);
+    box-shadow: 0 9px 22px rgb(255 169 64 / 28%);
+    color: #3a2305;
+    font-weight: 700;
+}
+.bouton-principal:hover:not(:disabled),
+button.principal:hover:not(:disabled) {
+    border-color: transparent;
+    background: linear-gradient(135deg, #ffdc92, #ffb55a);
+    box-shadow: 0 12px 28px rgb(255 169 64 / 40%);
+}
+/* Réglage « Réduire les animations » */
+[data-animations-reduites] *,
+[data-animations-reduites] *::before,
+[data-animations-reduites] *::after {
+    animation: none !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+}
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation: none !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+}
