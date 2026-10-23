@@ -42,6 +42,12 @@ export function grilleDepuisBateaux(bateaux: readonly Bateau[]): EtatCase[][] {
     return grille
 }
 
+/** Le bateau qui occupe cette case, s'il y en a un. */
+export function bateauSurCase(bateaux: readonly Bateau[], caseGrille: CoordCase): Bateau | undefined {
+    return bateaux.find((bateau) =>
+        casesBateau(bateau).some((occupee) => occupee.colonne === caseGrille.colonne && occupee.ligne === caseGrille.ligne))
+}
+
 /**
  * Résout un tir. Version locale, utile pour la démo : dans le vrai jeu,
  * c'est le SERVEUR qui calcule le résultat (le client ne connaît jamais la flotte adverse).

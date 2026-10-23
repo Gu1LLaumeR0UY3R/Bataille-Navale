@@ -4,8 +4,9 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
 import Grille3D from './components/BoardView3D.vue'
 import PlacementBateaux from './components/ShipPlacement.vue'
-import { tousCoules, grilleAvecTirs, placerFlotteAleatoirement, resoudreTir } from './game/rules.ts'
-import { FLOTTE, TAILLE_GRILLE, type CoordCase, type Bateau } from './game/types.ts'
+import { bateauSurCase, tousCoules, grilleAvecTirs, placerFlotteAleatoirement, resoudreTir } from './game/rules.ts'
+import { creerIA, DIFFICULTES, type Difficulte, type IA } from './game/ai.ts'
+import { FLOTTE, type CoordCase, type Bateau } from './game/types.ts'
 
 type Etape = 'placement' | 'en_cours' | 'terminee'
 
@@ -17,6 +18,8 @@ const tirsAdversesChezMoi = ref<CoordCase[]>([])
 const aMoiDeJouer = ref(true)
 const message = ref('')
 const gagnant = ref<'moi' | 'adversaire' | null>(null)
+const difficulte = ref<Difficulte>('medium')
+let ia: IA | null = null
 
 const maGrille = computed(() => grilleAvecTirs(mesBateaux.value, tirsAdversesChezMoi.value, true))
 const grilleAdverse = computed(() => grilleAvecTirs(bateauxAdverses.value, mesTirsChezAdversaire.value, false))
@@ -31,6 +34,7 @@ const memeCase = (premiere: CoordCase, seconde: CoordCase) =>
 function demarrerPartie(bateaux: Bateau[]) {
     mesBateaux.value = bateaux
     bateauxAdverses.value = placerFlotteAleatoirement(FLOTTE) // SERVEUR : placement de l'adversaire
+    ia = creerIA(difficulte.value)
     mesTirsChezAdversaire.value = []
     tirsAdversesChezMoi.value = []
     aMoiDeJouer.value = true
@@ -56,14 +60,10 @@ function tirer(caseGrille: CoordCase) {
 
 function tirAdverse() {
     // SERVEUR : l'adversaire jouera depuis un autre navigateur ; on le récupérera par polling.
-    let caseGrille: CoordCase
-    do {
-        caseGrille = {
-            colonne: Math.floor(Math.random() * TAILLE_GRILLE),
-            ligne: Math.floor(Math.random() * TAILLE_GRILLE),
-        }
-    } while (tirsAdversesChezMoi.value.some((tirPrecedent) => memeCase(tirPrecedent, caseGrille)))
+    if (!ia) return
+    const caseGrille = ia.choisirTir()
     const resultat = resoudreTir(mesBateaux.value, tirsAdversesChezMoi.value, caseGrille)
+    ia.enregistrerResultat(caseGrille, resultat, resultat === 'coule' ? bateauSurCase(mesBateaux.value, caseGrille) : undefined)
     tirsAdversesChezMoi.value = [...tirsAdversesChezMoi.value, caseGrille]
     message.value = `L’adversaire tire : ${libellesResultat[resultat].toLowerCase()}`
     if (tousCoules(mesBateaux.value, tirsAdversesChezMoi.value)) return terminerPartie('adversaire')
@@ -90,6 +90,14 @@ function recommencer() {
             <h1>Bataille navale</h1>
             <p v-if="etape !== 'placement'" class="etat-partie" role="status">{{ message }}</p>
         </header>
+
+        <fieldset v-if="etape === 'placement'" class="difficulte">
+            <legend>AI difficulty</legend>
+            <label v-for="option in DIFFICULTES" :key="option.valeur">
+                <input v-model="difficulte" type="radio" name="difficulte" :value="option.valeur" />
+                {{ option.libelle }}
+            </label>
+        </fieldset>
 
         <PlacementBateaux v-if="etape === 'placement'" @valider="demarrerPartie" />
 
@@ -211,5 +219,20 @@ figcaption small {
 .rejouer {
     grid-column: 1 / -1;
     justify-self: center;
+}
+.difficulte {
+    display: flex;
+    gap: 1.25rem;
+    margin: 0 0 1.5rem;
+    padding: 0.5rem 1rem;
+    border: 1px solid var(--ligne);
+    border-radius: 4px;
+}
+.difficulte legend {
+    padding: 0 0.4rem;
+    color: var(--attenue);
+}
+.difficulte label {
+    cursor: pointer;
 }
 </style>
