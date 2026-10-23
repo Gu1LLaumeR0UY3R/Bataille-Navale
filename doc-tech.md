@@ -18,6 +18,7 @@ La grille mesure 10 × 10 cases. Le joueur place cinq bateaux, puis alterne ses 
 ├── README.md
 ├── doc-tech.md
 ├── scripts/
+│   ├── check-outils.ts
 │   └── check-picking.ts
 └── src/
     ├── App.vue
@@ -31,6 +32,7 @@ La grille mesure 10 × 10 cases. Le joueur place cinq bateaux, puis alterne ses 
     │   ├── boardScene.ts
     │   └── cellPicking.ts
     └── game/
+        ├── outils.ts
         ├── rules.ts
         └── types.ts
 ```
@@ -110,6 +112,16 @@ Un résultat de tir (`ResultatTir`) est `rate`, `touche` ou `coule`. Les coordon
 
 Dans le code actuel, `App.vue` conserve les deux flottes, y compris celle de l’adversaire. Les commentaires `SERVEUR` signalent les opérations à remplacer lors de l’ajout d’un serveur : en production, la flotte adverse ne doit pas être envoyée au client.
 
+### Économie et outils
+
+`src/game/outils.ts` définit le revenu de 10 poissons par tour, le catalogue et les règles pures du sonar. Les prix de départ sont 15 pour le sonar, 10 pour la bouée leurre, 100 pour le brouilleur et 40 pour le drone ; seuls les 100 poissons du brouilleur ont été fixés explicitement, les autres valeurs restent à équilibrer.
+
+L’achat ne consomme pas l’action du tour. Utiliser un sonar, poser une bouée, activer un brouilleur ou réparer une case avec un drone consomme le tour. Le sonar porte sur une zone 3 × 3 et ne communique qu’une présence ou une absence. Une bouée dans la zone est révélée à sa position et masque les navires de cette zone ; elle expire après deux tours adverses. Le brouilleur bloque le prochain sonar. Un drone répare une case touchée et passe en recharge pendant deux tours ; les quatre modèles de drone s’affichent pendant la réparation.
+
+Les fichiers `.glb` de la bouée leurre, du brouilleur et du drone sont chargés par `boardScene.ts` aux coefficients respectifs 0,2, 1,4 et 0,35. Les achats et états de jeu sont actuellement locaux : l’adversaire IA ne possède pas encore de catalogue d’outils, et le dépôt ne comporte pas encore de système d’événements aléatoires ni de serveur d’arbitrage.
+
+L’icône de monnaie transparente, issue de l’image fournie, est optimisée en `public/images/poisson.png` et affichée à côté du solde.
+
 ### Détection d’une case par la scène
 
 Le moteur convertit les coordonnées de l’événement en pixels CSS relatifs au canvas, puis `ecranVersCase` crée un rayon à partir de la caméra. L’intersection avec le plan horizontal y = 0 fournit une position du monde, convertie en colonne et ligne. Une case hors grille, un rayon parallèle au plan ou une intersection derrière la caméra ne donne aucune case.
@@ -121,7 +133,7 @@ Le moteur convertit les coordonnées de l’événement en pixels CSS relatifs a
 - **`index.html`** — document HTML initial de Vite. Définit la langue française, les métadonnées de viewport, le titre, le conteneur `#app` et le chargement du module `src/main.ts`.
 - **`src/main.ts`** — point d’entrée Vue. Importe `App.vue`, crée l’application et la monte dans `#app`.
 - **`src/env.d.ts`** — déclaration TypeScript des fichiers `.vue` comme composants Vue typés.
-- **`package.json`** — identité du paquet, scripts, dépendances directes et versions/outils. Les commandes sont `dev`, `build`, `preview`, `typecheck` et `check:picking`. BabylonLite est fixé à la version 1.34.0.
+- **`package.json`** — identité du paquet, scripts, dépendances directes et versions/outils. Les commandes incluent `dev`, `build`, `preview`, `typecheck`, `check:picking`, `check:ai` et `check:outils`. BabylonLite est fixé à la version 1.34.0.
 - **`pnpm-lock.yaml`** — verrouille l’arbre complet des dépendances résolues par pnpm pour rendre les installations reproductibles.
 - **`tsconfig.json`** — configuration TypeScript stricte, ciblant ES2022 et les modules ESNext avec résolution Bundler. Inclut les sources Vue/TypeScript, les scripts et `vite.config.ts`.
 - **`vite.config.ts`** — active le plugin Vue. Configure en développement un proxy `/api` vers `http://localhost:8000`, destiné au futur serveur PHP.
@@ -129,20 +141,22 @@ Le moteur convertit les coordonnées de l’événement en pixels CSS relatifs a
 
 ### Application et composants Vue
 
-- **`src/App.vue`** — orchestre les étapes `placement`, `en_cours` et `terminee`, les flottes et les listes de tirs. Gère les tours, les messages, les conditions de victoire et le redémarrage. C’est aussi ici que l’adversaire local est simulé. Le template présente les deux grilles en jeu et le composant de placement avant la partie. Les styles globaux et ceux de la page définissent la palette, la typographie, la mise en page et l’adaptation mobile.
+- **`src/App.vue`** — orchestre les étapes `placement`, `en_cours` et `terminee`, les flottes, les tirs, le solde de poissons et les interactions avec les outils. Gère les tours, les messages, les conditions de victoire et le redémarrage. C’est aussi ici que l’adversaire local est simulé.
 - **`src/components/ShipPlacement.vue`** — gère le placement interactif : modèle suivant, orientation, aperçu, validation, annulation, remise à zéro et placement aléatoire. Écoute le clavier pour la touche R et transmet la flotte complète à l’application via l’événement `valider`.
-- **`src/components/BoardView3D.vue`** — adaptateur Vue autour de `SceneGrille`. À partir de ses propriétés, initialise la scène, met à jour cases et aperçu, puis émet `survol-case` et `clic-case`. Surveille les changements de propriétés et libère la scène au démontage. Affiche aussi une erreur accessible si l’initialisation échoue.
+- **`src/components/BoardView3D.vue`** — adaptateur Vue autour de `SceneGrille`. À partir de ses propriétés, initialise la scène, met à jour cases, bateaux, outils et aperçu, puis émet `survol-case` et `clic-case`. Surveille les changements de propriétés et libère la scène au démontage. Affiche aussi une erreur accessible si l’initialisation échoue.
 
 ### Règles et types
 
 - **`src/game/types.ts`** — définit `TAILLE_GRILLE`, les états `EtatCase`, les coordonnées `CoordCase`, les bateaux (`Bateau`, `ModeleBateau`), la flotte classique `FLOTTE`, les résultats `ResultatTir` et le type de couleur `Couleur`.
 - **`src/game/rules.ts`** — logique métier indépendante du rendu : calcul des cases d’un bateau (`casesBateau`), validation du placement (`estDansGrille`, `peutPlacer`), création d’une grille vide ou occupée, résolution d’un tir (`resoudreTir`), détection de fin de partie (`tousCoules`), composition de la grille après les tirs (`grilleAvecTirs`) et placement aléatoire de la flotte.
+- **`src/game/outils.ts`** — catalogue, revenu, achats, inventaire et résolution pure du sonar, avec gestion des bouées leurres et des brouilleurs.
 
 ### Moteur 3D et géométrie
 
 - **`src/engine/boardGeometry.ts`** — définit la taille d’une case, la conversion du centre d’une case vers le monde 3D et la conversion inverse d’un point du plan de jeu vers une case, avec rejet des coordonnées hors grille.
 - **`src/engine/cellPicking.ts`** — calcule la case visée à partir d’une caméra et d’un point en pixels CSS. Crée le rayon de sélection, trouve son intersection avec le plan y = 0 et délègue la conversion monde-grille à `mondeVersCase`.
-- **`src/engine/boardScene.ts`** — contient toute l’intégration BabylonLite. Définit l’API publique `SceneGrille` et ses options, construit moteur, scène, caméra, éclairages, fond marin, dalles et marqueurs. Les marqueurs sont créés avant l’enregistrement de la scène puis rendus visibles ou masqués selon l’état. Le module gère aussi les aperçus, le survol, les événements DOM, le redimensionnement et la libération des ressources.
+- **`src/engine/boardScene.ts`** — contient toute l’intégration BabylonLite. Définit l’API publique `SceneGrille` et ses options, construit moteur, scène, caméra, éclairages, fond marin, dalles, marqueurs et modèles 3D des outils. Les marqueurs sont créés avant l’enregistrement de la scène puis rendus visibles ou masqués selon l’état. Le module gère aussi les aperçus, le survol, les événements DOM, le redimensionnement et la libération des ressources.
+- **`scripts/check-outils.ts`** — vérifie les règles du revenu, des achats et des réponses sonar, y compris le masquage par une bouée et le brouillage.
 
 ### Vérification
 
@@ -157,6 +171,7 @@ pnpm install
 pnpm dev
 pnpm typecheck
 pnpm check:picking
+pnpm check:outils
 pnpm build
 pnpm preview
 ```

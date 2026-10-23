@@ -31,6 +31,7 @@ import {
 } from '@babylonjs/lite'
 import { FLOTTE, TAILLE_GRILLE, type Bateau, type CoordCase, type EtatCase, type Couleur } from '../game/types.ts'
 import { casesBateau } from '../game/rules.ts'
+import { CATALOGUE_OUTILS } from '../game/outils.ts'
 import { TAILLE_CASE, caseVersMonde } from './boardGeometry.ts'
 import { ecranVersCase } from './cellPicking.ts'
 import { hauteurVague } from './vagues.ts'
@@ -86,12 +87,20 @@ export interface OptionsSceneGrille {
     carte?: Carte | null
 }
 
+export interface OutilVisuel {
+    identifiant: string
+    type: 'bouee' | 'brouilleur' | 'drone'
+    caseGrille?: CoordCase
+    actif: boolean
+}
+
 // "API" de SceneGrille : ce que l'on peut appeler de l'extérieur
 export interface SceneGrille {
     /** Met à jour toutes les cases d'un coup. */
     definirCases(cases: readonly (readonly EtatCase[])[]): void
     definirEtatCase(colonne: number, ligne: number, etat: EtatCase): void
     definirBateaux(bateaux: readonly Bateau[]): void
+    definirOutils(outils: readonly OutilVisuel[]): void
 
     /** Surbrillance de la case sous le pointeur (null pour l'enlever). */
     definirSurvol(caseGrille: CoordCase | null): void
@@ -272,6 +281,7 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
   
     // Décors de la carte (îles, rochers, bouées, modèles 3D) : posés sur la mer, ils suivent les vagues.
     const decorsFlottants: { racine: SceneNode, x: number, z: number, reposY: number }[] = []
+    const modelesOutils = new Map<string, { racines: SceneNode[], centreY: number, minY: number }>()
     if (options.vue === 'inclinee' && options.carte) {
         const sable = materiauColore([0.86, 0.76, 0.52])
         const vegetation = materiauColore([0.2, 0.52, 0.26])
@@ -433,6 +443,38 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
         })
     }
 
+    if (options.vue === 'inclinee') {
+        for (const configuration of CATALOGUE_OUTILS) {
+            if (!configuration.modele || configuration.echelle === undefined) continue
+            const nombre = configuration.identifiant === 'drone' ? 4 : 1
+            const racines: SceneNode[] = []
+            let centreY = 0
+            let minY = 0
+            for (let index = 0; index < nombre; index++) {
+                const asset = await loadGltf(moteur, `${import.meta.env.BASE_URL}modeles/${configuration.modele}`)
+                const racine = asset.entities[0]
+                if (!racine) throw new Error(`Le modèle ${configuration.modele} ne contient aucune scène.`)
+                racine.scaling.set(
+                    racine.scaling.x * configuration.echelle,
+                    racine.scaling.y * configuration.echelle,
+                    racine.scaling.z * configuration.echelle,
+                )
+                addToScene(scene, asset)
+                const limites = mesurer(racine)
+                if (!limites) throw new Error(`Impossible de mesurer le modèle ${configuration.modele}.`)
+                centreY = (limites.min[1] + limites.max[1]) / 2
+                minY = limites.min[1]
+                setSubtreeVisible(racine, false)
+                racines.push(racine)
+            }
+            modelesOutils.set(configuration.identifiant, {
+                racines,
+                centreY,
+                minY,
+            })
+        }
+    }
+
     interface BateauPose {
         bateau: Bateau
         racine: SceneNode
@@ -488,7 +530,12 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
             const enAttente = pose.cases.some(({ colonne, ligne }) => impactsEnAttente.has(`${colonne},${ligne}`))
             setSubtreeVisible(pose.racine, !enAttente)
             const toutesCoulees = pose.cases.every(({ colonne, ligne }) => etatsCases[ligne]?.[colonne] === 'coule')
-            if (!effets || enAttente || !toutesCoulees || naufrages.has(identifiant)) return
+            if (!toutesCoulees) {
+                naufrages.delete(identifiant)
+                poserBateau(identifiant)
+                return
+            }
+            if (!effets || enAttente || naufrages.has(identifiant)) return
             const naufrage = { demarre: false, temps: 0 }
             naufrages.set(identifiant, naufrage)
             effets.planifier(DELAI_NAUFRAGE, () => { naufrage.demarre = true })
@@ -697,6 +744,32 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
                 }
             }
             actualiserBateaux()
+        },
+        definirOutils(outils) {
+            for (const modele of modelesOutils.values()) {
+                for (const racine of modele.racines) setSubtreeVisible(racine, false)
+            }
+            for (const outil of outils) {
+                if (!outil.actif) continue
+                const modele = modelesOutils.get(outil.type)
+                if (!modele) continue
+                const { racines, centreY, minY } = modele
+                if (outil.type === 'brouilleur') {
+                    racines[0]!.position.set(-5.7, 0.1 - minY, 5.7)
+                    setSubtreeVisible(racines[0]!, true)
+                } else if (outil.caseGrille) {
+                    const { x, z } = caseVersMonde(outil.caseGrille)
+                    const racinesActives = outil.type === 'drone' ? racines : racines.slice(0, 1)
+                    for (const [index, racine] of racinesActives.entries()) {
+                        const decalage = outil.type === 'drone'
+                            ? [[-0.28, -0.28], [0.28, -0.28], [-0.28, 0.28], [0.28, 0.28]][index]!
+                            : [0, 0]
+                        const hauteur = outil.type === 'drone' ? 1.1 - centreY : NIVEAU_EAU - minY
+                        racine.position.set(x + decalage[0]!, hauteur, z + decalage[1]!)
+                        setSubtreeVisible(racine, true)
+                    }
+                }
+            }
         },
         definirSurvol(caseGrille) {
             if (!caseGrille) {
