@@ -38,7 +38,7 @@ import { creerEau, creerEffets, type Effets } from './effets.ts'
 
 /** Couleur des cases de placement vues du dessus (RGB, 0 à 1). */
 const COULEUR_DALLE: Couleur = [0.07, 0.62, 0.72]
-const COULEUR_EAU: Couleur = [0.02, 0.3, 0.38]
+const COULEUR_EAU: Couleur = [0.04, 0.4, 0.52]
 const NIVEAU_EAU = -0.3
 /** Fond marin : l'eau est un bloc plein entre ce fond et la surface. */
 const FOND_MARIN = -1.4
@@ -164,7 +164,7 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
     // 1. Moteur et scène
     const moteur: EngineContext = await createEngine(toile)
     const scene = createSceneContext(moteur)
-    scene.clearColor = { r: 0.02, g: 0.06, b: 0.12, a: 1 }
+    scene.clearColor = { r: 0.12, g: 0.36, b: 0.52, a: 1 }
 
     // 2. Caméra FIXE : on n'appelle pas attachControl, le joueur ne peut pas la bouger.
     let camera: Camera
@@ -181,8 +181,18 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
 
     // 3. Lumières
     if (options.vue === 'inclinee') {
-        addToScene(scene, createHemisphericLight([0, 1, 0], 0.8))
-        addToScene(scene, createDirectionalLight([-0.4, -1, -0.3], 0.8))
+        // Ciel : lumière d'ambiance douce, plus claire en haut qu'en bas, sans reflet.
+        const ciel = createHemisphericLight([0, 1, 0], 0.85)
+        ciel.diffuseColor = [0.78, 0.9, 1]
+        ciel.groundColor = [0.32, 0.5, 0.58]
+        ciel.specularColor = [0, 0, 0]
+        addToScene(scene, ciel)
+        // Soleil : haut dans le ciel, derrière la caméra (la lumière avance vers +z, comme le regard).
+        // Les reflets partent donc loin de la caméra : ni éblouissement ni « pluie » de points brillants.
+        const soleil = createDirectionalLight([0.35, -0.85, 0.5], 0.85)
+        soleil.diffuse = [1, 0.93, 0.76]
+        soleil.specular = [0.12, 0.1, 0.07]
+        addToScene(scene, soleil)
     }
 
     if (options.vue === 'dessus') {
@@ -332,6 +342,8 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
         centreY: number
         centreZ: number
         axeLongX: boolean
+        /** Orientation du modèle juste après chargement : point de départ de chaque pose. */
+        quaternionInitial: Quat
     }>()
     for (const modele of FLOTTE) {
         const config = CONFIG_MODELES[modele.identifiant]!
@@ -357,6 +369,12 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
             centreY: (limites.min[1] + limites.max[1]) / 2,
             centreZ: (limites.min[2] + limites.max[2]) / 2,
             axeLongX: largeurX >= largeurZ,
+            quaternionInitial: [
+                racine.rotationQuaternion.x,
+                racine.rotationQuaternion.y,
+                racine.rotationQuaternion.z,
+                racine.rotationQuaternion.w,
+            ],
         })
     }
 
@@ -367,6 +385,8 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
         position: Vec3
         pivot: Vec3
         quaternionBase: Quat
+        /** Emplacement du bateau : sert à savoir s'il a changé entre deux appels de definirBateaux. */
+        signature: string
     }
     const bateauxPoses = new Map<string, BateauPose>()
     const naufrages = new Map<string, { demarre: boolean, temps: number }>()
@@ -556,8 +576,8 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
             modelesBateaux.forEach(({ racine }) => setSubtreeVisible(racine, false))
             casesAvecModele.clear()
             bateauxFlottants.length = 0
+            const anciennesPoses = new Map(bateauxPoses)
             bateauxPoses.clear()
-            naufrages.clear()
             for (const bateau of bateaux) {
                 const modele = modelesBateaux.get(bateau.identifiant)
                 if (!modele) continue
@@ -568,7 +588,7 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
                         casesAvecModele.add(`${colonne},${ligne}`)
                     }
                 }
-                const { racine, centreX, centreY, centreZ, axeLongX } = modele
+                const { racine, centreX, centreY, centreZ, axeLongX, quaternionInitial } = modele
                 const decalage = (bateau.longueur - 1) / 2
                 const centre = bateau.horizontal
                     ? caseVersMonde({ colonne: bateau.colonne + decalage, ligne: bateau.ligne })
@@ -588,6 +608,10 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
                     config.y,
                     centre.z - centreModeleZ,
                 )
+                // On repart TOUJOURS de l'orientation d'origine du modèle. Sans cela, `rotation.y = …` décompose
+                // l'orientation précédente en angles d'Euler : au-delà de 90° la décomposition bascule (x et z
+                // valent π) et le bateau se retrouvait retourné à chaque nouveau bateau posé.
+                racine.rotationQuaternion.set(...quaternionInitial)
                 racine.rotation.y = rotation
                 racine.rotation.z = 0
                 const quaternion = racine.rotationQuaternion
@@ -599,9 +623,16 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
                     position: [centre.x - centreModeleX, config.y, centre.z - centreModeleZ],
                     pivot: [centre.x, config.y + centreY, centre.z],
                     quaternionBase: [quaternion.x, quaternion.y, quaternion.z, quaternion.w],
+                    signature: `${bateau.colonne},${bateau.ligne},${bateau.horizontal},${bateau.longueur}`,
                 })
                 poserBateau(bateau.identifiant)
             }
+            // Un naufrage déjà joué est conservé tant que le bateau n'a pas bougé : sinon, à chaque nouveau
+            // bateau coulé, les précédents remonteraient puis couleraient une seconde fois.
+            naufrages.forEach((_, identifiant) => {
+                const pose = bateauxPoses.get(identifiant)
+                if (!pose || pose.signature !== anciennesPoses.get(identifiant)?.signature) naufrages.delete(identifiant)
+            })
             for (let ligne = 0; ligne < TAILLE_GRILLE; ligne++) {
                 for (let colonne = 0; colonne < TAILLE_GRILLE; colonne++) {
                     definirEtatCase(colonne, ligne, etatsCases[ligne]![colonne]!)

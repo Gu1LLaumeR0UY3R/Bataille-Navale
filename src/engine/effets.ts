@@ -116,8 +116,8 @@ function materiauEau(couleur: Couleur, luminosite: number, emission: number, bri
     const materiau = createStandardMaterial()
     materiau.diffuseColor = [couleur[0] * luminosite, couleur[1] * luminosite, couleur[2] * luminosite]
     materiau.emissiveColor = [couleur[0] * emission, couleur[1] * emission, couleur[2] * emission]
-    materiau.specularColor = brillant ? [0.35, 0.55, 0.6] : [0.05, 0.1, 0.12]
-    materiau.specularPower = 48
+    materiau.specularColor = brillant ? [0.1, 0.16, 0.18] : [0.02, 0.04, 0.05]
+    materiau.specularPower = 24
     materiau.backFaceCulling = false
     return materiau
 }

@@ -107,7 +107,7 @@ onBeforeUnmount(() => {
     width: 100%;
     aspect-ratio: 1 / 1; /* grille carrée : la caméra fixe est cadrée pour un canvas carré */
     border-radius: 6px;
-    background: #05101e;
+    background: #1f5c85;
     touch-action: none;
 }
 .toile-grille.interactif {
@@ -122,7 +122,7 @@ onBeforeUnmount(() => {
     margin: 0;
     text-align: center;
     color: #f4c9bd;
-    background: rgb(5 16 30 / 0.92);
+    background: rgb(11 47 74 / 0.94);
     border-radius: 6px;
 }
 </style>
