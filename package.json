@@ -9,6 +9,9 @@
         "typecheck": "vue-tsc --noEmit",
         "check:picking": "node --experimental-strip-types scripts/check-picking.ts",
         "check:ai": "node --experimental-strip-types scripts/check-ai.ts",
+        "check:ai-reparation": "node --experimental-strip-types scripts/check-ai-reparation.ts",
+        "check:reparation": "node --experimental-strip-types scripts/check-reparation.ts",
+        "check:drones": "node --experimental-strip-types scripts/check-drones.ts",
         "check:outils": "node --experimental-strip-types scripts/check-outils.ts",
         "generer:ocean": "node scripts/generer-ocean-anime.mjs public/modeles/ocean-source.glb public/modeles/ocean-anime.glb"
     },

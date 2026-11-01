@@ -89,8 +89,15 @@ export interface OptionsEau {
     couleur: Couleur
     /** Hauteur moyenne de l'eau. */
     niveau: number
-    /** Hauteur du fond : l'eau forme un bloc plein entre le fond et la surface. */
+    /** Hauteur du fond : l'eau forme un bloc entre le fond et la surface. */
     fond: number
+    /** Opacité de la surface et des parois (0 = invisible, 1 = opaque). L'eau est translucide : on voit le fond. */
+    opacite?: { surface: number, parois: number }
+    /**
+     * Eau trouble en profondeur : des strates translucides empilées entre la surface et le fond. Ce qui est
+     * près de la surface reste net ; plus on descend, plus le regard traverse de strates et plus c'est voilé.
+     */
+    strates?: { nombre: number, opacite: number, couleurFond: Couleur }
 }
 
 const SUBDIVISIONS_EAU = 40
@@ -112,8 +119,10 @@ function surfaceEau(x: number, z: number, temps: number) {
 /** Part de la profondeur occupée par la tranche claire (près de la surface) des parois. */
 const PART_TRANCHE_CLAIRE = 0.4
 
-function materiauEau(couleur: Couleur, luminosite: number, emission: number, brillant: boolean) {
+function materiauEau(couleur: Couleur, luminosite: number, emission: number, brillant: boolean, alpha = 1) {
     const materiau = createStandardMaterial()
+    // alpha < 1 dès la création : sinon BabylonLite rend le matériau comme opaque.
+    materiau.alpha = alpha
     materiau.diffuseColor = [couleur[0] * luminosite, couleur[1] * luminosite, couleur[2] * luminosite]
     materiau.emissiveColor = [couleur[0] * emission, couleur[1] * emission, couleur[2] * emission]
     materiau.specularColor = brillant ? [0.1, 0.16, 0.18] : [0.02, 0.04, 0.05]
@@ -123,6 +132,7 @@ function materiauEau(couleur: Couleur, luminosite: number, emission: number, bri
 }
 
 export function creerEau(moteur: EngineContext, scene: SceneContext, options: OptionsEau): void {
+    const opacite = options.opacite ?? { surface: 1, parois: 1 }
     const colonnes = SUBDIVISIONS_EAU + 1
     const nombreSommets = colonnes * colonnes
     const positions = new Float32Array(nombreSommets * 3)
@@ -160,7 +170,9 @@ export function creerEau(moteur: EngineContext, scene: SceneContext, options: Op
     // exactement les sommets de bord de la surface, donc elle monte et descend avec elle.
     const demi = options.taille / 2
     const profondeurTotale = options.niveau - options.fond
-    const basTranche = options.niveau - profondeurTotale * PART_TRANCHE_CLAIRE
+    // Eau opaque : seule la tranche du haut est visible (le bloc profond cache le reste).
+    // Eau translucide : les parois descendent jusqu'au sable, on voit le fond de profil.
+    const basTranche = options.niveau - profondeurTotale * (opacite.surface >= 1 ? PART_TRANCHE_CLAIRE : 1)
     const cotes = [
         { point: (k: number): [number, number] => [-demi + (k / SUBDIVISIONS_EAU) * options.taille, -demi], normale: [0, -1] },
         { point: (k: number): [number, number] => [demi, -demi + (k / SUBDIVISIONS_EAU) * options.taille], normale: [1, 0] },
@@ -226,23 +238,40 @@ export function creerEau(moteur: EngineContext, scene: SceneContext, options: Op
 
     // Surface
     const eau = createMeshFromData(moteur, 'eau_profonde', positions, normales, indices, uvs)
-    eau.material = materiauEau(options.couleur, 1, 0.25, true)
+    eau.material = materiauEau(options.couleur, 1, 0.25, true, opacite.surface)
     addToScene(scene, eau)
 
     // Tranche claire des parois (animée) : l'épaisseur de l'eau vue de côté
     const parois = createMeshFromData(moteur, 'eau_parois', positionsParois, normalesParois, indicesParois, uvsParois)
-    parois.material = materiauEau(options.couleur, 0.85, 0.3, false)
+    parois.material = materiauEau(options.couleur, 0.85, 0.3, false, opacite.parois)
     addToScene(scene, parois)
 
-    // Eau profonde : un bloc plein, plus sombre, jusqu'au fond. Son dessus est sous la surface, donc invisible d'en haut.
-    const profond = createBox(moteur, {
-        width: options.taille,
-        height: basTranche - options.fond,
-        depth: options.taille,
-    })
-    profond.material = materiauEau(options.couleur, 0.5, 0.1, false)
-    profond.position.set(0, (basTranche + options.fond) / 2, 0)
-    addToScene(scene, profond)
+    // Strates de turbidité : de fines dalles translucides, de plus en plus sombres vers le fond.
+    if (options.strates && opacite.surface < 1) {
+        const { nombre, opacite: opaciteStrate, couleurFond } = options.strates
+        for (let rang = 1; rang <= nombre; rang++) {
+            const part = rang / (nombre + 1) // 0 = surface, 1 = fond
+            const teinte = options.couleur.map((composante, i) => composante + (couleurFond[i]! - composante) * part) as Couleur
+            const strate = createBox(moteur, { width: options.taille, height: 0.01, depth: options.taille })
+            strate.material = materiauEau(teinte, 0.8, 0.12, false, opaciteStrate)
+            // Les strates sont plus serrées vers le fond : le voile s'épaissit avec la profondeur.
+            strate.position.set(0, options.niveau - profondeurTotale * Math.pow(part, 0.8), 0)
+            addToScene(scene, strate)
+        }
+    }
+
+    // Eau profonde : un bloc plein, plus sombre, jusqu'au fond. Il n'existe que si l'eau est opaque :
+    // translucide, il cacherait le sable, les cailloux et les algues.
+    if (opacite.surface >= 1) {
+        const profond = createBox(moteur, {
+            width: options.taille,
+            height: basTranche - options.fond,
+            depth: options.taille,
+        })
+        profond.material = materiauEau(options.couleur, 0.5, 0.1, false)
+        profond.position.set(0, (basTranche + options.fond) / 2, 0)
+        addToScene(scene, profond)
+    }
 
     onBeforeRender(scene, (deltaMs) => {
         temps += Math.min(deltaMs, 50) / 1000

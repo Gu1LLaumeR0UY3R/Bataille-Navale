@@ -33,9 +33,13 @@ import { FLOTTE, TAILLE_GRILLE, type Bateau, type CoordCase, type EtatCase, type
 import { casesBateau } from '../game/rules.ts'
 import { CATALOGUE_OUTILS } from '../game/outils.ts'
 import { TAILLE_CASE, caseVersMonde } from './boardGeometry.ts'
+import { CASES_MODELE_BASE } from '../game/carte.ts'
 import { ecranVersCase } from './cellPicking.ts'
 import { hauteurVague } from './vagues.ts'
 import { creerEau, creerEffets, type Effets } from './effets.ts'
+import { COULEUR_SABLE, creerDecorFondMarin } from './fondMarin.ts'
+import { DUREE_DRONES, INSTANT_REPARATION, NOMBRE_DRONES, poseDrone } from './dronesAnimation.ts'
+import { creerHorloge } from './horloge.ts'
 import { AMBIANCE_DEFAUT } from '../maps/chargeur.ts'
 import type { Carte } from '../maps/types.ts'
 
@@ -44,6 +48,9 @@ const COULEUR_DALLE: Couleur = [0.07, 0.62, 0.72]
 const NIVEAU_EAU = -0.3
 /** Fond marin : l'eau est un bloc plein entre ce fond et la surface. */
 const FOND_MARIN = -1.4
+/** Opacité de l'eau : assez claire pour voir le sable, les cailloux et les algues au travers. */
+const OPACITE_SURFACE = 0.34
+const OPACITE_PAROIS = 0.3
 const EPAISSEUR_LIGNE_GRILLE = 0.018
 const HAUTEUR_LIGNE_GRILLE = NIVEAU_EAU + 0.16
 const DUREE_NAUFRAGE = 3.5
@@ -85,11 +92,22 @@ export interface OptionsSceneGrille {
     couleurFondMarin: Couleur | null,
     /** Carte choisie : ambiance (mer, ciel, lumière) et décors. Sans carte : ambiance par défaut. */
     carte?: Carte | null
+    /** Appelé à chaque étape du chargement (moteur, effets, décor, navires, outils, compilation). */
+    surProgres?: (progres: ProgresChargement) => void
+}
+
+export interface ProgresChargement {
+    /** Étapes terminées, sur `total`. */
+    fait: number
+    total: number
+    /** Ce qui vient d'être chargé, en français, pour l'écran de chargement. */
+    etape: string
 }
 
 export interface OutilVisuel {
     identifiant: string
-    type: 'bouee' | 'brouilleur' | 'drone'
+    /** `contact` : balise de sonar sur une case où le sonar a affiché un navire. */
+    type: 'bouee' | 'brouilleur' | 'drone' | 'contact'
     caseGrille?: CoordCase
     actif: boolean
 }
@@ -101,6 +119,15 @@ export interface SceneGrille {
     definirEtatCase(colonne: number, ligne: number, etat: EtatCase): void
     definirBateaux(bateaux: readonly Bateau[]): void
     definirOutils(outils: readonly OutilVisuel[]): void
+    /** Cases protégées par un bouclier (dôme translucide). */
+    definirBoucliers(cases: readonly CoordCase[]): void
+    /** Un tir vient d'être bloqué par le bouclier de cette case : le dôme s'illumine. */
+    flasherBouclier(caseGrille: CoordCase): void
+    /**
+     * Lance l'animation des quatre drones de réparation autour de cette case.
+     * `reparee` est appelé quand la case est réparée (mi-parcours), `terminee` quand les drones sont partis.
+     */
+    jouerReparation(caseGrille: CoordCase, rappels?: { reparee?: () => void, terminee?: () => void }): void
 
     /** Surbrillance de la case sous le pointeur (null pour l'enlever). */
     definirSurvol(caseGrille: CoordCase | null): void
@@ -175,8 +202,21 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
 
     const ambiance = options.carte?.ambiance ?? AMBIANCE_DEFAUT
 
+    // Progression du chargement : le moteur, les effets, chaque modèle (décor, navires, outils), la compilation.
+    const modelesDecor = options.vue === 'inclinee' ? (options.carte?.decors ?? []).filter((decor) => decor.type === 'modele').length : 0
+    const modelesOutils3D = options.vue === 'inclinee'
+        ? CATALOGUE_OUTILS.reduce((somme, outil) => somme + (outil.modele && outil.echelle !== undefined ? (outil.identifiant === 'drone' ? 4 : 1) : 0), 0)
+        : 0
+    const totalEtapes = (options.vue === 'inclinee' ? 2 : 1) + modelesDecor + FLOTTE.length + modelesOutils3D + 1
+    let etapesFaites = 0
+    const avancer = (etape: string) => {
+        etapesFaites = Math.min(totalEtapes, etapesFaites + 1)
+        options.surProgres?.({ fait: etapesFaites, total: totalEtapes, etape })
+    }
+
     // 1. Moteur et scène
     const moteur: EngineContext = await createEngine(toile)
+    avancer('Préparation de la mer')
     const scene = createSceneContext(moteur)
     scene.clearColor = { r: ambiance.ciel[0], g: ambiance.ciel[1], b: ambiance.ciel[2], a: 1 }
 
@@ -217,10 +257,15 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
     const fondMarin = createGround(moteur, { width: TAILLE_GRILLE + 4, height: TAILLE_GRILLE + 4 })
     if (options.couleurFondMarin === null) {
         if (options.vue === 'inclinee') {
-            fondMarin.material = materiauColore([0.03, 0.1, 0.2])
+            fondMarin.material = materiauColore(COULEUR_SABLE)
         } else {
             fondMarin.material = materiauColore([1, 1, 1])
         }
+    } else if (options.vue === 'inclinee') {
+        // Le sable garde une légère teinte d'identité (verte pour votre flotte, rouge pour la zone ennemie).
+        const teinte = 0.18
+        fondMarin.material = materiauColore(COULEUR_SABLE.map((composante, i) =>
+            composante * (1 - teinte) + options.couleurFondMarin![i]! * teinte) as Couleur)
     } else {
         fondMarin.material = materiauColore(options.couleurFondMarin)
     }
@@ -234,8 +279,17 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
 
     let effets: Effets | null = null
     if (options.vue === 'inclinee') {
-        creerEau(moteur, scene, { taille: TAILLE_GRILLE + 4, couleur: ambiance.eau, niveau: NIVEAU_EAU, fond: FOND_MARIN })
+        creerEau(moteur, scene, {
+            taille: TAILLE_GRILLE + 4,
+            couleur: ambiance.eau,
+            niveau: NIVEAU_EAU,
+            fond: FOND_MARIN,
+            opacite: { surface: OPACITE_SURFACE, parois: OPACITE_PAROIS },
+            strates: { nombre: 4, opacite: 0.16, couleurFond: [0.04, 0.3, 0.5] },
+        })
+        creerDecorFondMarin(moteur, scene, { taille: TAILLE_GRILLE + 4, fond: FOND_MARIN, tailleGrille: TAILLE_GRILLE })
         effets = await creerEffets(moteur, scene)
+        avancer('Mise en place des effets')
 
         const materiauQuadrillage = materiauColore([0.02, 0.18, 0.24], [0.12, 0.8, 1])
         materiauQuadrillage.specularColor = [0.3, 0.8, 1]
@@ -265,6 +319,14 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
     // Vagues : seulement en vue inclinée (les grilles de jeu). En vue de dessus (placement), l'eau reste calme.
     const AVEC_VAGUES = options.vue === 'inclinee'
     let tempsVagues = 0
+    /** Réparation en cours : où, et à quel instant (de l'horloge des vagues) elle a commencé. */
+    let reparation: {
+        x: number
+        z: number
+        debut: number
+        reparee: boolean
+        rappels?: { reparee?: () => void, terminee?: () => void }
+    } | null = null
     interface Cellule {
         x: number
         z: number
@@ -281,7 +343,16 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
   
     // Décors de la carte (îles, rochers, bouées, modèles 3D) : posés sur la mer, ils suivent les vagues.
     const decorsFlottants: { racine: SceneNode, x: number, z: number, reposY: number }[] = []
-    const modelesOutils = new Map<string, { racines: SceneNode[], centreY: number, minY: number }>()
+    const modelesOutils = new Map<string, {
+        racines: SceneNode[]
+        centreX: number
+        centreY: number
+        centreZ: number
+        minY: number
+        /** Taille et orientation de chaque racine juste après chargement : l'animation repart toujours de là. */
+        echellesBase: Vec3[]
+        quaternionsInitiaux: Quat[]
+    }>()
     if (options.vue === 'inclinee' && options.carte) {
         const sable = materiauColore([0.86, 0.76, 0.52])
         const vegetation = materiauColore([0.2, 0.52, 0.26])
@@ -325,6 +396,8 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
                 } catch (erreur) {
                     // Un modèle de décor manquant ne doit pas empêcher de jouer.
                     console.warn(`[cartes] décor ${decor.fichier} : chargement impossible`, erreur)
+                } finally {
+                    avancer('Décor de la carte')
                 }
             }
         }
@@ -392,7 +465,8 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
     addToScene(scene, maillageSurvol)
 
     const creerLotApercu = (materiau: ReturnType<typeof materiauColore>): Mesh[] =>
-        Array.from({ length: LONGUEUR_MAX_BATEAU }, () => {
+        // Au moins 9 cases : l'aperçu du sonar couvre une zone de 3 × 3.
+        Array.from({ length: Math.max(LONGUEUR_MAX_BATEAU, 9) }, () => {
             const maillage = masquer(createBox(moteur, { width: 0.9, height: 0.3, depth: 0.9 }))
             maillage.material = materiau
             addToScene(scene, maillage)
@@ -400,6 +474,30 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
         })
     const lotValide = creerLotApercu(materiauValide)
     const lotInvalide = creerLotApercu(materiauInvalide)
+
+    // Contacts de sonar : disques lumineux réutilisés, qui pulsent sur les cases où le sonar a vu un navire.
+    // Vert vif de radar : il se détache de l'eau turquoise.
+    const materielContact = materiauColore([0.25, 1, 0.3], [0.1, 0.85, 0.2])
+    materielContact.alpha = 0.85
+    interface Contact { maillage: Mesh, x: number, z: number, actif: boolean }
+    const contacts: Contact[] = Array.from({ length: 16 }, () => {
+        const maillage = masquer(createCylinder(moteur, { height: 0.06, diameter: 0.74, tessellation: 24 }))
+        maillage.material = materielContact
+        addToScene(scene, maillage)
+        return { maillage, x: 0, z: 0, actif: false }
+    })
+
+    // Boucliers : quelques dômes translucides réutilisés (un par case protégée).
+    const materiauBouclier = materiauColore([0.3, 0.72, 1], [0.1, 0.42, 0.75])
+    materiauBouclier.alpha = 0.45 // alpha < 1 dès la création, sinon rendu opaque
+    materiauBouclier.specularColor = [0.6, 0.9, 1]
+    interface Bouclier { maillage: Mesh, x: number, z: number, actif: boolean, apparu: number, flash: number }
+    const boucliers: Bouclier[] = Array.from({ length: 4 }, () => {
+        const maillage = masquer(createSphere(moteur, { diameter: 1.25, segments: 18 }))
+        maillage.material = materiauBouclier
+        addToScene(scene, maillage)
+        return { maillage, x: 0, z: 0, actif: false, apparu: -10, flash: -10 }
+    })
 
     const modelesBateaux = new Map<string, {
         racine: SceneNode
@@ -428,6 +526,7 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
         const largeurX = limites.max[0] - limites.min[0]
         const largeurZ = limites.max[2] - limites.min[2]
         setSubtreeVisible(racine, false)
+        avancer('Armement des navires')
         modelesBateaux.set(modele.identifiant, {
             racine,
             centreX: (limites.min[0] + limites.max[0]) / 2,
@@ -448,29 +547,49 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
             if (!configuration.modele || configuration.echelle === undefined) continue
             const nombre = configuration.identifiant === 'drone' ? 4 : 1
             const racines: SceneNode[] = []
+            const echellesBase: Vec3[] = []
+            const quaternionsInitiaux: Quat[] = []
+            let centreX = 0
             let centreY = 0
+            let centreZ = 0
             let minY = 0
             for (let index = 0; index < nombre; index++) {
                 const asset = await loadGltf(moteur, `${import.meta.env.BASE_URL}modeles/${configuration.modele}`)
                 const racine = asset.entities[0]
                 if (!racine) throw new Error(`Le modèle ${configuration.modele} ne contient aucune scène.`)
-                racine.scaling.set(
-                    racine.scaling.x * configuration.echelle,
-                    racine.scaling.y * configuration.echelle,
-                    racine.scaling.z * configuration.echelle,
-                )
                 addToScene(scene, asset)
-                const limites = mesurer(racine)
-                if (!limites) throw new Error(`Impossible de mesurer le modèle ${configuration.modele}.`)
-                centreY = (limites.min[1] + limites.max[1]) / 2
-                minY = limites.min[1]
+                // Même règle que l'éditeur de carte : le modèle est d'abord ramené à CASES_MODELE_BASE cases dans
+                // sa plus grande largeur au sol, puis multiplié par le coefficient de l'outil. Sans cela, un
+                // coefficient de 0,35 appliqué à un drone de 0,7 unité le réduirait à un quart de case.
+                const natif = mesurer(racine)
+                if (!natif) throw new Error(`Impossible de mesurer le modèle ${configuration.modele}.`)
+                const largeur = Math.max(natif.max[0] - natif.min[0], natif.max[2] - natif.min[2])
+                if (!(largeur > 0)) throw new Error(`Dimensions illisibles pour le modèle ${configuration.modele}.`)
+                const facteur = (CASES_MODELE_BASE * TAILLE_CASE * configuration.echelle) / largeur
+                racine.scaling.set(racine.scaling.x * facteur, racine.scaling.y * facteur, racine.scaling.z * facteur)
+                centreX = ((natif.min[0] + natif.max[0]) / 2) * facteur
+                centreY = ((natif.min[1] + natif.max[1]) / 2) * facteur
+                centreZ = ((natif.min[2] + natif.max[2]) / 2) * facteur
+                minY = natif.min[1] * facteur
                 setSubtreeVisible(racine, false)
+                avancer('Remplissage de l’arsenal')
                 racines.push(racine)
+                echellesBase.push([racine.scaling.x, racine.scaling.y, racine.scaling.z])
+                quaternionsInitiaux.push([
+                    racine.rotationQuaternion.x,
+                    racine.rotationQuaternion.y,
+                    racine.rotationQuaternion.z,
+                    racine.rotationQuaternion.w,
+                ])
             }
             modelesOutils.set(configuration.identifiant, {
                 racines,
+                centreX,
                 centreY,
+                centreZ,
                 minY,
+                echellesBase,
+                quaternionsInitiaux,
             })
         }
     }
@@ -545,12 +664,14 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
     // 5. Enregistrement (compile les pipelines GPU) puis démarrage de la boucle de rendu
     await registerScene(scene)
     await startEngine(moteur)
+    avancer('Dernières vérifications')
 
     // Animation des vagues : une fois par image, on recalcule les hauteurs depuis la position de repos
     // (jamais depuis la position précédente : les décalages ne s'accumulent donc pas).
     if (AVEC_VAGUES) {
+        const horloge = creerHorloge()
         onBeforeRender(scene, (deltaMs) => {
-            tempsVagues += deltaMs / 1000
+            tempsVagues += horloge(deltaMs) / 1000
             for (const cellule of cellules) {
                 const hauteur = hauteurVague(cellule.x, cellule.z, tempsVagues)
                 cellule.dalle.position.y = -0.05 + hauteur
@@ -572,6 +693,62 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
                 const bateau = bateauxFlottants.find((pose) => pose.identifiant === identifiant)
                 if (bateau) poserBateau(identifiant, hauteurVague(bateau.x, bateau.z, tempsVagues))
             })
+
+            // Contacts de sonar : le disque pulse en suivant la vague.
+            for (const contact of contacts) {
+                if (!contact.actif) continue
+                const pulsation = 1 + 0.18 * Math.sin(tempsVagues * 5 + contact.x * 2)
+                contact.maillage.scaling.set(pulsation, 1, pulsation)
+                contact.maillage.position.y = 0.07 + hauteurVague(contact.x, contact.z, tempsVagues)
+            }
+
+            // Boucliers : le dôme flotte avec la vague, apparaît en grossissant (avec un petit rebond)
+            // et s'illumine un instant quand il arrête un tir.
+            for (const bouclier of boucliers) {
+                if (!bouclier.actif) continue
+                const progression = Math.min(1, (tempsVagues - bouclier.apparu) / 0.45)
+                const apparition = 1 + 2.7 * Math.pow(progression - 1, 3) + 1.7 * Math.pow(progression - 1, 2)
+                const ageEclat = tempsVagues - bouclier.flash
+                const eclat = ageEclat >= 0 && ageEclat < 0.7 ? 0.4 * (1 - ageEclat / 0.7) : 0
+                const taille = Math.max(0.01, apparition) * (1 + 0.03 * Math.sin(tempsVagues * 4)) * (1 + eclat)
+                bouclier.maillage.scaling.set(taille, taille, taille)
+                bouclier.maillage.position.y = 0.22 + hauteurVague(bouclier.x, bouclier.z, tempsVagues)
+            }
+
+            // Drones de réparation : chacun suit sa trajectoire (arrivée, orbite, départ).
+            if (reparation) {
+                const modeleDrone = modelesOutils.get('drone')
+                const temps = tempsVagues - reparation.debut
+                if (reparation.rappels?.reparee && !reparation.reparee && temps >= INSTANT_REPARATION) {
+                    reparation.reparee = true
+                    reparation.rappels.reparee()
+                }
+                if (!modeleDrone || temps > DUREE_DRONES) {
+                    modeleDrone?.racines.forEach((racine) => setSubtreeVisible(racine, false))
+                    const fini = reparation
+                    reparation = null
+                    fini.rappels?.terminee?.()
+                } else {
+                    const vague = hauteurVague(reparation.x, reparation.z, tempsVagues)
+                    modeleDrone.racines.slice(0, NOMBRE_DRONES).forEach((racine, index) => {
+                        const pose = poseDrone(index, temps, reparation!)
+                        setSubtreeVisible(racine, pose.visible)
+                        if (!pose.visible) return
+                        const base = modeleDrone.echellesBase[index]!
+                        racine.scaling.set(base[0] * pose.echelle, base[1] * pose.echelle, base[2] * pose.echelle)
+                        // On repart toujours de l'orientation d'origine (même précaution que pour les bateaux).
+                        racine.rotationQuaternion.set(...modeleDrone.quaternionsInitiaux[index]!)
+                        racine.rotation.y = pose.lacet
+                        const cosinus = Math.cos(pose.lacet)
+                        const sinus = Math.sin(pose.lacet)
+                        racine.position.set(
+                            pose.x - (cosinus * modeleDrone.centreX + sinus * modeleDrone.centreZ) * pose.echelle,
+                            pose.y + vague - modeleDrone.centreY * pose.echelle,
+                            pose.z - (-sinus * modeleDrone.centreX + cosinus * modeleDrone.centreZ) * pose.echelle,
+                        )
+                    })
+                }
+            }
         })
     }
 
@@ -749,8 +926,22 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
             for (const modele of modelesOutils.values()) {
                 for (const racine of modele.racines) setSubtreeVisible(racine, false)
             }
+            for (const contact of contacts) {
+                contact.actif = false
+                setSubtreeVisible(contact.maillage, false)
+            }
             for (const outil of outils) {
                 if (!outil.actif) continue
+                if (outil.type === 'contact') {
+                    const libre = outil.caseGrille ? contacts.find((candidat) => !candidat.actif) : undefined
+                    if (libre && outil.caseGrille) {
+                        const { x, z } = caseVersMonde(outil.caseGrille)
+                        Object.assign(libre, { x, z, actif: true })
+                        libre.maillage.position.set(x, 0.07, z)
+                        setSubtreeVisible(libre.maillage, true)
+                    }
+                    continue
+                }
                 const modele = modelesOutils.get(outil.type)
                 if (!modele) continue
                 const { racines, centreY, minY } = modele
@@ -770,6 +961,34 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
                     }
                 }
             }
+        },
+        definirBoucliers(cases) {
+            const voulus = cases.slice(0, boucliers.length).map((caseGrille) => caseVersMonde(caseGrille))
+            for (const bouclier of boucliers) {
+                if (bouclier.actif && !voulus.some(({ x, z }) => x === bouclier.x && z === bouclier.z)) {
+                    bouclier.actif = false
+                    setSubtreeVisible(bouclier.maillage, false)
+                }
+            }
+            for (const { x, z } of voulus) {
+                if (boucliers.some((bouclier) => bouclier.actif && bouclier.x === x && bouclier.z === z)) continue
+                const libre = boucliers.find((bouclier) => !bouclier.actif)
+                if (!libre) break
+                // Le dôme naît avec un éclat : il grossit puis se calme.
+                Object.assign(libre, { x, z, actif: true, apparu: tempsVagues, flash: tempsVagues })
+                libre.maillage.position.set(x, 0.22, z)
+                libre.maillage.scaling.set(0.01, 0.01, 0.01)
+                setSubtreeVisible(libre.maillage, true)
+            }
+        },
+        flasherBouclier(caseGrille) {
+            const { x, z } = caseVersMonde(caseGrille)
+            const bouclier = boucliers.find((candidat) => candidat.actif && candidat.x === x && candidat.z === z)
+            if (bouclier) bouclier.flash = tempsVagues
+        },
+        jouerReparation(caseGrille, rappels) {
+            const { x, z } = caseVersMonde(caseGrille)
+            reparation = { x, z, debut: tempsVagues, reparee: false, rappels }
         },
         definirSurvol(caseGrille) {
             if (!caseGrille) {

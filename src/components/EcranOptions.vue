@@ -14,7 +14,7 @@ const curseurs = [
     <section class="options">
         <p class="surtitre">RÉGLAGES</p>
         <h1>Options</h1>
-        <p class="note">Le son arrive bientôt : vos réglages sont déjà enregistrés.</p>
+        <p class="note">Ces réglages commandent les effets sonores du jeu (poissons, achats, drones, boucliers).</p>
 
         <div class="carte">
             <h2>Son</h2>
