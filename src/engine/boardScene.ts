@@ -158,11 +158,11 @@ function masquer(maillage: Mesh): Mesh {
 const LONGUEUR_MAX_BATEAU = Math.max(...FLOTTE.map((bateau) => bateau.longueur))
 
 const CONFIG_MODELES: Record<string, { fichier: string, facteur: number, y: number, inverserSens?: boolean, inverserSensHorizontal?: boolean, inverserSensVertical?: boolean }> = {
-    porte_avions: { fichier: 'porte-avions-lowpoly.glb', facteur: 0.32, y: 0.1 },
-    croiseur: { fichier: 'cuirasse-lowpoly.glb', facteur: 0.03, y: 0.1, inverserSens: true },
-    contre_torpilleur: { fichier: 'patrouilleur-hurricane.glb', facteur: 0.15, y: 0.1, inverserSensVertical: true },
-    sous_marin: { fichier: 'sous-marin.glb', facteur: 0.0045, y: 0.1, inverserSensHorizontal: true },
-    torpilleur: { fichier: 'cuirasse-simple.glb', facteur: 0.59, y: 0.3, inverserSens: true },
+    porte_avions: { fichier: 'porte-avions-lowpoly.glb', facteur: 0.29, y: 0.1 },
+    croiseur: { fichier: 'cuirasse-lowpoly.glb', facteur: 0.07, y: -0.3, inverserSens: true },
+    contre_torpilleur: { fichier: 'patrouilleur-hurricane.glb', facteur: 0.13, y: -0.2, inverserSensVertical: true },
+    sous_marin: { fichier: 'sous-marin.glb', facteur: 0.0045, y: -0.3, inverserSensHorizontal: true },
+    torpilleur: { fichier: 'cuirasse-simple.glb', facteur: 0.59, y: -0.05, inverserSens: true },
 }
 
 function mesurer(racine: SceneNode): { min: [number, number, number], max: [number, number, number] } | null {
