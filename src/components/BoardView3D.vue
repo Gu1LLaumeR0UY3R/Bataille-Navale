@@ -12,13 +12,13 @@ const proprietes = withDefaults(
         cases: EtatCase[][]
         vue?: 'inclinee' | 'dessus'
         interactif?: boolean
-        apercu?: { cases: CoordCase[]; valide: boolean } | null
+        apercu?: { cases: CoordCase[]; valide: boolean; balise?: boolean } | null
         bateaux?: Bateau[]
         outils?: OutilVisuel[]
         /** Cases protégées par un bouclier. */
         boucliers?: CoordCase[]
         /** Chaque nouvel `id` lance l'animation des drones autour de `caseGrille`. */
-        reparation?: { id: number; caseGrille: CoordCase } | null
+        reparation?: { id: number; caseGrille: CoordCase; cases?: CoordCase[] } | null
         /** Chaque nouvel `id` fait scintiller le bouclier de `caseGrille` (tir bloqué). */
         impactBouclier?: { id: number; caseGrille: CoordCase } | null
         couleurFondMarin?: Couleur
@@ -50,7 +50,7 @@ let estDemonte = false
 
 function appliquerApercu() {
     if (proprietes.apercu) {
-        sceneGrille.value?.definirApercu(proprietes.apercu.cases, proprietes.apercu.valide)
+        sceneGrille.value?.definirApercu(proprietes.apercu.cases, proprietes.apercu.valide, proprietes.apercu.balise)
     } else sceneGrille.value?.effacerApercu()
 }
 
@@ -103,7 +103,7 @@ watch(() => proprietes.reparation?.id, () => {
     sceneGrille.value?.jouerReparation(reparation.caseGrille, {
         reparee: () => emettre('reparation-faite', reparation.id),
         terminee: () => emettre('reparation-finie', reparation.id),
-    })
+    }, reparation.cases)
 })
 watch(() => proprietes.impactBouclier?.id, () => {
     if (proprietes.impactBouclier) sceneGrille.value?.flasherBouclier(proprietes.impactBouclier.caseGrille)

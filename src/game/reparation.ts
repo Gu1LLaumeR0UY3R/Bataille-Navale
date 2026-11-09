@@ -1,6 +1,7 @@
 // Réparation par drones et immunité de la case réparée. Logique pure : aucune dépendance à Vue ni à la 3D.
 //
 // Règles :
+// - un navire ne peut être réparé qu'UNE SEULE FOIS par les drones ;
 // - les drones réparent un NAVIRE touché mais ENCORE À FLOT : toutes ses cases touchées redeviennent saines
 //   (un navire dont toutes les cases ont été touchées est coulé : plus de réparation possible) ;
 // - chaque case réparée reçoit un bouclier pendant un tour adverse : un tir sur l'une d'elles est bloqué et
@@ -10,7 +11,7 @@
 import type { Bateau, CoordCase } from './types.ts'
 import { bateauSurCase, casesBateau } from './rules.ts'
 
-export type RaisonRefus = 'pas-touchee' | 'bateau-coule'
+export type RaisonRefus = 'pas-touchee' | 'bateau-coule' | 'deja-repare'
 
 export type DiagnosticReparation =
     | { ok: true, bateau: Bateau, /** Les cases touchées du navire : celles que les drones réparent. */ casesReparees: CoordCase[] }
@@ -24,9 +25,12 @@ export function evaluerReparation(
     bateaux: readonly Bateau[],
     tirs: readonly CoordCase[],
     caseGrille: CoordCase,
+    /** Identifiants des navires que les drones ont déjà réparés : un navire ne se répare qu'une seule fois. */
+    naviresDejaRepares: readonly string[] = [],
 ): DiagnosticReparation {
     const bateau = bateauSurCase(bateaux, caseGrille)
     if (!bateau || !tirs.some((tir) => memeCase(tir, caseGrille))) return { ok: false, raison: 'pas-touchee' }
+    if (naviresDejaRepares.includes(bateau.identifiant)) return { ok: false, raison: 'deja-repare' }
     const cases = casesBateau(bateau)
     const touchees = cases.filter((caseBateau) => tirs.some((tir) => memeCase(tir, caseBateau)))
     return touchees.length === cases.length ? { ok: false, raison: 'bateau-coule' } : { ok: true, bateau, casesReparees: touchees }
@@ -50,4 +54,5 @@ export function tirBloque(boucliers: readonly CoordCase[], tir: CoordCase): bool
 export const messagesRefusReparation: Record<RaisonRefus, string> = {
     'pas-touchee': 'Les drones ne réparent qu’un navire touché : visez une de ses cases touchées.',
     'bateau-coule': 'Ce navire est coulé : les drones arrivent trop tard.',
+    'deja-repare': 'Ce navire a déjà été réparé par les drones : une seule réparation par navire.',
 }

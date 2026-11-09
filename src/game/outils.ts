@@ -81,6 +81,8 @@ export interface Arsenal {
     brouilleurActif: boolean
     /** Cases protégées par un bouclier jusqu'au prochain tir adverse. */
     boucliers: CoordCase[]
+    /** Navires (identifiants) déjà réparés par les drones : chacun ne peut l'être qu'une fois. */
+    naviresRepares: string[]
 }
 
 export const creerArsenal = (): Arsenal => ({
@@ -90,6 +92,7 @@ export const creerArsenal = (): Arsenal => ({
     bouees: [],
     brouilleurActif: false,
     boucliers: [],
+    naviresRepares: [],
 })
 
 const memeCase = (premiere: CoordCase, seconde: CoordCase) =>

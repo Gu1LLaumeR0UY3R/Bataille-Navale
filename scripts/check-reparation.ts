@@ -40,3 +40,8 @@ if (tirBloque([{ colonne: 3, ligne: 2 }], { colonne: 2, ligne: 2 })) erreur('Le 
 if (tirBloque([], { colonne: 3, ligne: 2 })) erreur('Un tir est bloqué sans bouclier.')
 
 console.log('OK : réparation (touche, eau, coulé), retrait du tir et bouclier.')
+
+// Un navire ne se répare qu'une seule fois.
+const unique = evaluerReparation(flotte, deux, { colonne: 3, ligne: 2 }, ['croiseur'])
+if (unique.ok || unique.raison !== 'deja-repare') erreur('Un navire déjà réparé a pu être réparé une deuxième fois.')
+console.log('OK : un navire ne se répare qu\'une fois.')

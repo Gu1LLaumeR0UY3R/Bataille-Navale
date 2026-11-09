@@ -51,9 +51,9 @@ const outilSelectionne = ref<IdentifiantOutil | null>(null)
 const derniereRecherche = ref('')
 /** Cases où votre sonar a affiché un navire (vrai ou leurre) : elles restent marquées jusqu'au tir. */
 const contactsSonar = ref<CoordCase[]>([])
-const reparationEnCours = ref<{ id: number, caseGrille: CoordCase } | null>(null)
+const reparationEnCours = ref<{ id: number, caseGrille: CoordCase, cases?: CoordCase[] } | null>(null)
 const impactBouclier = ref<{ id: number, caseGrille: CoordCase } | null>(null)
-const reparationAdverse = ref<{ id: number, caseGrille: CoordCase } | null>(null)
+const reparationAdverse = ref<{ id: number, caseGrille: CoordCase, cases?: CoordCase[] } | null>(null)
 const impactBouclierAdverse = ref<{ id: number, caseGrille: CoordCase } | null>(null)
 /** Vrai pendant que l'adversaire « réfléchit » avant de jouer. */
 const reflexionAdverse = ref(false)
@@ -151,10 +151,10 @@ const apercuMaGrille = computed(() => {
     const cible = survolMaGrille.value
     if (!cible || !aMoiDeJouer.value) return null
     if (outilSelectionne.value === 'drone') {
-        const diagnostic = evaluerReparation(mesBateaux.value, tirsAdversesChezMoi.value, cible)
-        return { cases: diagnostic.ok ? diagnostic.casesReparees : [cible], valide: diagnostic.ok }
+        const diagnostic = evaluerReparation(mesBateaux.value, tirsAdversesChezMoi.value, cible, joueur.naviresRepares)
+        return { cases: diagnostic.ok ? diagnostic.casesReparees : [cible], valide: diagnostic.ok, balise: true }
     }
-    if (outilSelectionne.value === 'bouee') return { cases: [cible], valide: boueePosable(cible) }
+    if (outilSelectionne.value === 'bouee') return { cases: [cible], valide: boueePosable(cible), balise: true }
     return null
 })
 
@@ -386,12 +386,13 @@ function utiliserOutilSurCase(caseGrille: CoordCase) {
     }
 
     if (identifiant === 'drone') {
-        const diagnostic = evaluerReparation(mesBateaux.value, tirsAdversesChezMoi.value, caseGrille)
+        const diagnostic = evaluerReparation(mesBateaux.value, tirsAdversesChezMoi.value, caseGrille, joueur.naviresRepares)
         if (!diagnostic.ok) {
             message.value = messagesRefusReparation[diagnostic.raison]
             return
         }
         consommer(joueur, 'drone')
+        joueur.naviresRepares.push(diagnostic.bateau.identifiant)
         lancerReparation(caseGrille, diagnostic.casesReparees)
     }
 }
@@ -405,7 +406,12 @@ function lancerReparation(caseGrille: CoordCase, cases: CoordCase[]) {
     survolMaGrille.value = null
     aMoiDeJouer.value = false
     compteurs.outilsUtilises++
-    reparationEnCours.value = { id: ++compteurAnimation, caseGrille }
+    // Les drones se placent au milieu des cases réparées : ils s'occupent de tout le navire, pas d'une seule case.
+    const centre = {
+        colonne: cases.reduce((somme, c) => somme + c.colonne, 0) / cases.length,
+        ligne: cases.reduce((somme, c) => somme + c.ligne, 0) / cases.length,
+    }
+    reparationEnCours.value = { id: ++compteurAnimation, caseGrille: centre, cases }
     etapeReparation = 'en-vol'
     casesEnReparation = cases
     message.value = `Les drones foncent vers votre navire en ${coordonnees(caseGrille)}…`
@@ -525,11 +531,12 @@ function sonarAdverse(centre: CoordCase) {
 
 /** L'adversaire envoie ses drones sur l'un de ses navires touchés : vous les voyez voler sur SA grille. */
 function droneAdverse(caseGrille: CoordCase) {
-    const diagnostic = evaluerReparation(bateauxAdverses.value, mesTirsChezAdversaire.value, caseGrille)
+    const diagnostic = evaluerReparation(bateauxAdverses.value, mesTirsChezAdversaire.value, caseGrille, adverse.naviresRepares)
     if (!diagnostic.ok) return tirAdverse()
+    adverse.naviresRepares.push(diagnostic.bateau.identifiant)
     etapeReparationAdverse = 'en-vol'
     casesEnReparationAdverse = diagnostic.casesReparees
-    reparationAdverse.value = { id: ++compteurAnimation, caseGrille }
+    reparationAdverse.value = { id: ++compteurAnimation, caseGrille, cases: diagnostic.casesReparees }
     message.value = 'L’adversaire envoie ses drones réparer l’un de ses navires…'
     sonDrones()
     if (animationPiloteeAMain()) return

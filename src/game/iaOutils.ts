@@ -83,9 +83,11 @@ const memeCase = (premiere: CoordCase, seconde: CoordCase) =>
 interface NavireAbime { bateau: Bateau, touches: CoordCase[] }
 
 /** Navires touchés mais pas coulés, le plus menacé en premier. */
-function naviresAbimes(bateaux: readonly Bateau[], tirs: readonly CoordCase[]): NavireAbime[] {
+function naviresAbimes(bateaux: readonly Bateau[], tirs: readonly CoordCase[], dejaRepares: readonly string[] = []): NavireAbime[] {
     const abimes: NavireAbime[] = []
     for (const bateau of bateaux) {
+        // Un navire déjà réparé par les drones ne peut plus l'être : inutile d'acheter ou d'envoyer un drone.
+        if (dejaRepares.includes(bateau.identifiant)) continue
         const cases = casesBateau(bateau)
         const touches = cases.filter((caseBateau) => tirs.some((tir) => memeCase(tir, caseBateau)))
         if (touches.length > 0 && touches.length < cases.length) abimes.push({ bateau, touches })
@@ -117,7 +119,7 @@ export function planifierTour(ctx: ContexteTourIA): PlanTour {
     const profil = PROFILS[ctx.niveau]
     const { arsenal, hasard } = ctx
     const plan: PlanTour = { achats: [], gratuites: [], principale: { type: 'tir' } }
-    const abimes = naviresAbimes(ctx.mesBateaux, ctx.tirsRecus)
+    const abimes = naviresAbimes(ctx.mesBateaux, ctx.tirsRecus, arsenal.naviresRepares)
     const acheterSi = (outil: IdentifiantOutil, probabilite: number) => {
         if (ctx.autorises && !ctx.autorises.includes(outil)) return
         if (probabilite > 0 && peutAcheter(arsenal, outil) && hasard() < probabilite && acheter(arsenal, outil)) plan.achats.push(outil)

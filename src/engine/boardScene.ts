@@ -127,13 +127,13 @@ export interface SceneGrille {
      * Lance l'animation des quatre drones de réparation autour de cette case.
      * `reparee` est appelé quand la case est réparée (mi-parcours), `terminee` quand les drones sont partis.
      */
-    jouerReparation(caseGrille: CoordCase, rappels?: { reparee?: () => void, terminee?: () => void }): void
+    jouerReparation(caseGrille: CoordCase, rappels?: { reparee?: () => void, terminee?: () => void }, cases?: readonly CoordCase[]): void
 
     /** Surbrillance de la case sous le pointeur (null pour l'enlever). */
     definirSurvol(caseGrille: CoordCase | null): void
 
     /** Prévisualisation d'un bateau en cours de placement : vert si valide, rouge sinon. */
-    definirApercu(cases: readonly CoordCase[], valide: boolean): void
+    definirApercu(cases: readonly CoordCase[], valide: boolean, balise?: boolean): void
     effacerApercu(): void
 
     surSurvolCase(rappel: (caseGrille: CoordCase | null) => void): void
@@ -323,6 +323,8 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
     let reparation: {
         x: number
         z: number
+        /** Une cible par case réparée : chaque drone s'occupe de la sienne. */
+        cibles: { x: number, z: number }[]
         debut: number
         reparee: boolean
         rappels?: { reparee?: () => void, terminee?: () => void }
@@ -475,6 +477,19 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
     const lotValide = creerLotApercu(materiauValide)
     const lotInvalide = creerLotApercu(materiauInvalide)
 
+    // Balises : un faisceau lumineux qui dépasse au-dessus des navires, pour retrouver la case visée même sous un
+    // porte-avions (la dalle d'aperçu, elle, disparaît sous la coque).
+    const HAUTEUR_BALISE = 2.6
+    const creerBalises = (materiau: ReturnType<typeof materiauColore>): Mesh[] =>
+        Array.from({ length: LONGUEUR_MAX_BATEAU }, () => {
+            const maillage = masquer(createBox(moteur, { width: 0.14, height: HAUTEUR_BALISE, depth: 0.14 }))
+            maillage.material = materiau
+            addToScene(scene, maillage)
+            return maillage
+        })
+    const balisesValides = creerBalises(materiauColore([0.3, 1, 0.45], [0.3, 0.95, 0.4]))
+    const balisesInvalides = creerBalises(materiauColore([1, 0.35, 0.3], [0.95, 0.3, 0.25]))
+
     // Contacts de sonar : disques lumineux réutilisés, qui pulsent sur les cases où le sonar a vu un navire.
     // Vert vif de radar : il se détache de l'eau turquoise.
     const materielContact = materiauColore([0.25, 1, 0.3], [0.1, 0.85, 0.2])
@@ -492,7 +507,7 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
     materiauBouclier.alpha = 0.45 // alpha < 1 dès la création, sinon rendu opaque
     materiauBouclier.specularColor = [0.6, 0.9, 1]
     interface Bouclier { maillage: Mesh, x: number, z: number, actif: boolean, apparu: number, flash: number }
-    const boucliers: Bouclier[] = Array.from({ length: 4 }, () => {
+    const boucliers: Bouclier[] = Array.from({ length: 5 }, () => {
         const maillage = masquer(createSphere(moteur, { diameter: 1.25, segments: 18 }))
         maillage.material = materiauBouclier
         addToScene(scene, maillage)
@@ -647,7 +662,8 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
     const actualiserBateaux = () => {
         bateauxPoses.forEach((pose, identifiant) => {
             const enAttente = pose.cases.some(({ colonne, ligne }) => impactsEnAttente.has(`${colonne},${ligne}`))
-            setSubtreeVisible(pose.racine, !enAttente)
+            // Le navire reste TOUJOURS visible pendant le vol du boulet : le masquer le faisait clignoter à chaque tir.
+            setSubtreeVisible(pose.racine, true)
             const toutesCoulees = pose.cases.every(({ colonne, ligne }) => etatsCases[ligne]?.[colonne] === 'coule')
             if (!toutesCoulees) {
                 naufrages.delete(identifiant)
@@ -731,7 +747,8 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
                 } else {
                     const vague = hauteurVague(reparation.x, reparation.z, tempsVagues)
                     modeleDrone.racines.slice(0, NOMBRE_DRONES).forEach((racine, index) => {
-                        const pose = poseDrone(index, temps, reparation!)
+                        const cibleDrone = reparation!.cibles[index % reparation!.cibles.length]!
+                        const pose = poseDrone(index, temps, cibleDrone)
                         setSubtreeVisible(racine, pose.visible)
                         if (!pose.visible) return
                         const base = modeleDrone.echellesBase[index]!
@@ -840,6 +857,7 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
         apercuActif.length = 0
         lotValide.forEach((maillage) => setSubtreeVisible(maillage, false))
         lotInvalide.forEach((maillage) => setSubtreeVisible(maillage, false))
+        balisesValides.concat(balisesInvalides).forEach((maillage) => setSubtreeVisible(maillage, false))
     }
 
     let estLiberee = false
@@ -986,9 +1004,10 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
             const bouclier = boucliers.find((candidat) => candidat.actif && candidat.x === x && candidat.z === z)
             if (bouclier) bouclier.flash = tempsVagues
         },
-        jouerReparation(caseGrille, rappels) {
+        jouerReparation(caseGrille, rappels, cases) {
             const { x, z } = caseVersMonde(caseGrille)
-            reparation = { x, z, debut: tempsVagues, reparee: false, rappels }
+            const cibles = (cases?.length ? cases : [caseGrille]).map((c) => caseVersMonde(c))
+            reparation = { x, z, cibles, debut: tempsVagues, reparee: false, rappels }
         },
         definirSurvol(caseGrille) {
             if (!caseGrille) {
@@ -1001,9 +1020,10 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
             maillageSurvol.position.set(x, 0.02 + (AVEC_VAGUES ? hauteurVague(x, z, tempsVagues) : 0), z)
             setSubtreeVisible(maillageSurvol, true)
         },
-        definirApercu(cases, valide) {
+        definirApercu(cases, valide, balise = false) {
             effacerApercu()
             const lot = valide ? lotValide : lotInvalide
+            const balises = valide ? balisesValides : balisesInvalides
             cases.slice(0, lot.length).forEach((caseGrille, index) => {
                 const maillage = lot[index]!
                 // Les cases hors grille ne sont pas dessinées (le rouge ne s'affiche que sur la grille)
@@ -1013,6 +1033,11 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
                 maillage.position.set(x, 0.17 + (AVEC_VAGUES ? hauteurVague(x, z, tempsVagues) : 0), z)
                 if (AVEC_VAGUES) apercuActif.push({ maillage, x, z, hauteurRepos: 0.17 })
                 setSubtreeVisible(maillage, true)
+                const faisceau = balise ? balises[index] : undefined
+                if (faisceau) {
+                    faisceau.position.set(x, HAUTEUR_BALISE / 2, z)
+                    setSubtreeVisible(faisceau, true)
+                }
             })
         },
         effacerApercu,
