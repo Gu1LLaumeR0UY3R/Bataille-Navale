@@ -51,8 +51,9 @@ const FOND_MARIN = -1.4
 /** Opacité de l'eau : assez claire pour voir le sable, les cailloux et les algues au travers. */
 const OPACITE_SURFACE = 0.34
 const OPACITE_PAROIS = 0.3
-const EPAISSEUR_LIGNE_GRILLE = 0.018
-const HAUTEUR_LIGNE_GRILLE = NIVEAU_EAU + 0.16
+/** Le quadrillage est posé sur le sable : un peu plus épais que s'il était en surface, il se lit au travers de l'eau. */
+const EPAISSEUR_LIGNE_GRILLE = 0.05
+const HAUTEUR_LIGNE_GRILLE = FOND_MARIN + 0.03
 const DUREE_NAUFRAGE = 3.5
 const DELAI_NAUFRAGE = 0.4
 const ENFONCEMENT_NAUFRAGE = 0.35

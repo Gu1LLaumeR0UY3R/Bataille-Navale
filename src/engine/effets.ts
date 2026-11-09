@@ -48,6 +48,13 @@ type Vec3 = [number, number, number]
 const DUREE_VOL = 0.6
 const DUREE_EXPLOSION = 1
 const DUREE_ONDE = 1.3
+/** Durée totale d'une éclaboussure : gerbe, gouttes puis écume qui se défait. */
+const DUREE_ECLABOUSSURE = 2
+const GOUTTES_PAR_ONDE = 22
+const DENTELLES_PAR_ONDE = 16
+const GRAVITE_GOUTTES = 7
+/** Plaques d'écume qui restent sur une case où un tir est tombé à l'eau. */
+const PLAQUES_ECUME_PAR_CASE = 7
 const NOMBRE_BOULETS = 3
 const NOMBRE_EXPLOSIONS = 3
 const NOMBRE_ONDES = 4
@@ -103,17 +110,79 @@ export interface OptionsEau {
 const SUBDIVISIONS_EAU = 40
 const AMPLITUDE_EAU = 1
 
+/** Un boulet qui entre dans l'eau : la surface réagit pendant `DUREE_IMPACT_EAU` secondes. */
+interface ImpactEau {
+    x: number
+    z: number
+    age: number
+    force: number
+}
+
+const DUREE_IMPACT_EAU = 3.4
+const IMPACTS_EAU_MAX = 6
+/** Vitesse de propagation du front d'onde (unités du monde par seconde). */
+const VITESSE_ONDE = 1.5
+/** Nombre d'onde : 2π / longueur d'onde (≈ 0,9 de la case). */
+const NOMBRE_D_ONDE = 7
+const AUCUN_IMPACT: readonly ImpactEau[] = []
+const impactsParScene = new WeakMap<SceneContext, ImpactEau[]>()
+
+const impactsDeLaScene = (scene: SceneContext): ImpactEau[] => {
+    let impacts = impactsParScene.get(scene)
+    if (!impacts) {
+        impacts = []
+        impactsParScene.set(scene, impacts)
+    }
+    return impacts
+}
+
+/** Fait réagir la surface de l'eau à un impact en (x, z). `force` : 1 = boulet normal. */
+function ajouterImpactEau(scene: SceneContext, x: number, z: number, force = 1) {
+    const impacts = impactsDeLaScene(scene)
+    impacts.push({ x, z, age: 0, force })
+    if (impacts.length > IMPACTS_EAU_MAX) impacts.shift()
+}
+
+/**
+ * Hauteur ajoutée à la surface par les impacts, à la distance r du point d'entrée et à l'âge a :
+ *   h(r, a) = F · [ A · e^(−a/τ) · e^(−r/L) · cos(k·(r − c·a)) · E(r, a)  −  P · e^(−r²/s²) · e^(−a/τc) ]
+ * - le cosinus est l'onde circulaire qui s'éloigne à la vitesse c ;
+ * - e^(−r/L) l'affaiblit avec la distance (la même énergie sur un cercle de plus en plus grand) ;
+ * - e^(−a/τ) l'amortit avec le temps (viscosité) ;
+ * - E(r, a) vaut 1 derrière le front et chute à 0 devant : l'eau ne bouge pas avant que l'onde arrive ;
+ * - le dernier terme est le cratère creusé à l'entrée du boulet, qui se comble vite.
+ */
+function hauteurImpacts(x: number, z: number, impacts: readonly ImpactEau[]): number {
+    let somme = 0
+    for (const impact of impacts) {
+        const r = Math.hypot(x - impact.x, z - impact.z)
+        const a = impact.age
+        const devantLeFront = r - (VITESSE_ONDE * a + 0.35)
+        const enveloppe = devantLeFront <= 0 ? 1 : Math.exp(-(devantLeFront * devantLeFront) / 0.06)
+        const ondes = 0.075 * Math.exp(-a / 1.1) * Math.exp(-r / 1.3) * Math.cos(NOMBRE_D_ONDE * (r - VITESSE_ONDE * a)) * enveloppe
+        const cratere = -0.14 * Math.exp(-(r * r) / 0.05) * Math.exp(-a / 0.22)
+        somme += impact.force * (ondes + cratere)
+    }
+    return somme
+}
+
 /** Hauteur de la surface (et pente) au point (x, z), à l'instant `temps`, relativement au niveau moyen. */
-function surfaceEau(x: number, z: number, temps: number) {
+function surfaceEau(x: number, z: number, temps: number, impacts: readonly ImpactEau[] = AUCUN_IMPACT) {
     // Trois sinusoïdes de directions et de vitesses différentes : la surface ne se répète pas à l'œil.
     const phaseA = 1.6 * x + 1.1 * temps
     const phaseB = 1.2 * z - 0.9 * temps
     const phaseC = 2.4 * (x + z) + 1.7 * temps
-    return {
-        hauteur: (0.05 * Math.sin(phaseA) + 0.04 * Math.sin(phaseB) + 0.025 * Math.sin(phaseC)) * AMPLITUDE_EAU,
-        penteX: 0.05 * 1.6 * Math.cos(phaseA) + 0.025 * 2.4 * Math.cos(phaseC),
-        penteZ: 0.04 * 1.2 * Math.cos(phaseB) + 0.025 * 2.4 * Math.cos(phaseC),
+    let hauteur = (0.05 * Math.sin(phaseA) + 0.04 * Math.sin(phaseB) + 0.025 * Math.sin(phaseC)) * AMPLITUDE_EAU
+    let penteX = 0.05 * 1.6 * Math.cos(phaseA) + 0.025 * 2.4 * Math.cos(phaseC)
+    let penteZ = 0.04 * 1.2 * Math.cos(phaseB) + 0.025 * 2.4 * Math.cos(phaseC)
+    if (impacts.length > 0) {
+        // Pente des impacts par différences finies (la formule est lisse, 0,06 suffit).
+        const e = 0.06
+        hauteur += hauteurImpacts(x, z, impacts)
+        penteX += (hauteurImpacts(x + e, z, impacts) - hauteurImpacts(x - e, z, impacts)) / (2 * e)
+        penteZ += (hauteurImpacts(x, z + e, impacts) - hauteurImpacts(x, z - e, impacts)) / (2 * e)
     }
+    return { hauteur, penteX, penteZ }
 }
 
 /** Part de la profondeur occupée par la tranche claire (près de la surface) des parois. */
@@ -215,12 +284,13 @@ export function creerEau(moteur: EngineContext, scene: SceneContext, options: Op
         }
     })
 
+    const impacts = impactsDeLaScene(scene)
     let temps = 0
     const calculer = () => {
         for (let sommet = 0; sommet < nombreSommets; sommet++) {
             const x = positions[sommet * 3]!
             const z = positions[sommet * 3 + 2]!
-            const { hauteur, penteX, penteZ } = surfaceEau(x, z, temps)
+            const { hauteur, penteX, penteZ } = surfaceEau(x, z, temps, impacts)
             positions[sommet * 3 + 1] = options.niveau + hauteur
             // Normale = (-dh/dx, 1, -dh/dz), normalisée.
             const longueur = Math.hypot(penteX, 1, penteZ)
@@ -231,7 +301,7 @@ export function creerEau(moteur: EngineContext, scene: SceneContext, options: Op
         for (let sommet = 0; sommet < cotes.length * colonnes; sommet++) {
             const indiceHaut = sommet * 2
             positionsParois[indiceHaut * 3 + 1] = options.niveau +
-                surfaceEau(positionsParois[indiceHaut * 3]!, positionsParois[indiceHaut * 3 + 2]!, temps).hauteur
+                surfaceEau(positionsParois[indiceHaut * 3]!, positionsParois[indiceHaut * 3 + 2]!, temps, impacts).hauteur
         }
     }
     calculer()
@@ -274,7 +344,12 @@ export function creerEau(moteur: EngineContext, scene: SceneContext, options: Op
     }
 
     onBeforeRender(scene, (deltaMs) => {
-        temps += Math.min(deltaMs, 50) / 1000
+        const dt = Math.min(deltaMs, 50) / 1000
+        temps += dt
+        for (let index = impacts.length - 1; index >= 0; index--) {
+            impacts[index]!.age += dt
+            if (impacts[index]!.age > DUREE_IMPACT_EAU) impacts.splice(index, 1)
+        }
         calculer()
         updateMeshPositions(moteur, eau, positions)
         updateMeshNormals(moteur, eau, normales)
@@ -329,6 +404,10 @@ interface Onde {
     materiauJet: StandardMaterialProps
     gouttes: Mesh[]
     vitesses: Vec3[]
+    tailles: number[]
+    /** Écume en dentelle : de petites plaques blanches qui suivent la vague puis se défont. */
+    dentelle: { maillage: Mesh, angle: number, facteur: number, taille: number }[]
+    materiauDentelle: StandardMaterialProps
 }
 
 interface Bouffee {
@@ -408,6 +487,7 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext): P
             })
         }
         const materiauJet = await creerMateriau([0.8, 0.93, 1], [0.35, 0.5, 0.55], 0.8, true)
+        const materiauDentelle = await creerMateriau([1, 1, 1], [0.6, 0.65, 0.66], 0.85, true)
         ondes.push({
             actif: false,
             age: 0,
@@ -416,8 +496,16 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext): P
             anneaux,
             jet: ajouter(scene, createCylinder(moteur, { height: 1, diameterBottom: 0.3, diameterTop: 0.06, tessellation: 12 }), materiauJet),
             materiauJet,
-            gouttes: Array.from({ length: 6 }, () => ajouter(scene, createSphere(moteur, { diameter: 0.07, segments: 5 }), materielGoutte)),
-            vitesses: Array.from({ length: 6 }, () => [0, 0, 0] as Vec3),
+            gouttes: Array.from({ length: GOUTTES_PAR_ONDE }, () => ajouter(scene, createSphere(moteur, { diameter: 0.07, segments: 5 }), materielGoutte)),
+            vitesses: Array.from({ length: GOUTTES_PAR_ONDE }, () => [0, 0, 0] as Vec3),
+            tailles: Array.from({ length: GOUTTES_PAR_ONDE }, () => 1),
+            dentelle: Array.from({ length: DENTELLES_PAR_ONDE }, () => ({
+                maillage: ajouter(scene, createCylinder(moteur, { height: 0.012, diameter: 1, tessellation: 9 }), materiauDentelle),
+                angle: 0,
+                facteur: 1,
+                taille: 0.15,
+            })),
+            materiauDentelle,
         })
     }
 
@@ -461,16 +549,28 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext): P
             const { x, z } = caseVersMonde({ colonne, ligne })
 
             const groupe = createTransformNode(`ecume_${colonne}_${ligne}`, x, 0, z)
-            const anneauExterieur = createTorus(moteur, { diameter: 0.66, thickness: 0.07, tessellation: 24 })
-            anneauExterieur.material = materielEcume
-            anneauExterieur.position.set(0, 0.03, 0)
-            const anneauInterieur = createTorus(moteur, { diameter: 0.34, thickness: 0.05, tessellation: 20 })
-            anneauInterieur.material = materielEcume
-            anneauInterieur.position.set(0.04, 0.03, -0.03)
-            const nappe = createCylinder(moteur, { height: 0.012, diameter: 0.62, tessellation: 24 })
+            // Écume en dentelle : un voile turquoise pâle et des plaques blanches irrégulières posées en couronne,
+            // avec des trous entre elles (comme l'écume d'une mer agitée vue de haut). Chaque case a son motif,
+            // fixé par sa position pour qu'il ne change pas d'un affichage à l'autre.
+            const nappe = createCylinder(moteur, { height: 0.012, diameter: 0.7, tessellation: 20 })
             nappe.material = materielMousse
             nappe.position.set(0, 0.012, 0)
-            groupe.children.push(anneauExterieur, anneauInterieur, nappe)
+            groupe.children.push(nappe)
+            const graine = (colonne * 7 + ligne * 13 + 3) % 17
+            const pseudoHasard = (rang: number) => {
+                const valeur = Math.sin((graine + 1) * 12.9898 + rang * 78.233) * 43758.5453
+                return valeur - Math.floor(valeur)
+            }
+            for (let plaque = 0; plaque < PLAQUES_ECUME_PAR_CASE; plaque++) {
+                const angle = (plaque / PLAQUES_ECUME_PAR_CASE) * Math.PI * 2 + pseudoHasard(plaque) * 0.9
+                const rayon = 0.16 + pseudoHasard(plaque + 20) * 0.2
+                const taille = 0.13 + pseudoHasard(plaque + 40) * 0.13
+                const morceau = createCylinder(moteur, { height: 0.016, diameter: taille, tessellation: 9 })
+                morceau.material = materielEcume
+                morceau.scaling.set(1, 1, 0.7 + pseudoHasard(plaque + 60) * 0.5)
+                morceau.position.set(Math.cos(angle) * rayon, 0.028, Math.sin(angle) * rayon)
+                groupe.children.push(morceau)
+            }
             addToScene(scene, groupe)
             setSubtreeVisible(groupe, false)
             ecumes[ligne]!.push(groupe)
@@ -507,15 +607,24 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext): P
         onde.age = 0
         onde.x = x
         onde.z = z
-        onde.vitesses.forEach((vitesse) => {
+        // Couronne : des gouttes jaillissent en gerbe, plus ou moins fines et rapides.
+        onde.vitesses.forEach((vitesse, index) => {
             const angle = hasard(0, Math.PI * 2)
-            const vitesseHorizontale = hasard(0.35, 0.9)
+            const vitesseHorizontale = hasard(0.3, 1.15)
             vitesse[0] = Math.cos(angle) * vitesseHorizontale
-            vitesse[1] = hasard(2.0, 3.0)
+            vitesse[1] = hasard(1.9, 3.6)
             vitesse[2] = Math.sin(angle) * vitesseHorizontale
+            onde.tailles[index] = hasard(0.5, 1.5)
+        })
+        onde.dentelle.forEach((plaque) => {
+            plaque.angle = hasard(0, Math.PI * 2)
+            plaque.facteur = hasard(0.45, 1)
+            plaque.taille = hasard(0.1, 0.24)
         })
         montrer(onde.jet, true)
         onde.gouttes.forEach((maillage) => montrer(maillage, true))
+        onde.dentelle.forEach((plaque) => montrer(plaque.maillage, true))
+        ajouterImpactEau(scene, x, z)
     }
 
     const traiterImpact = (boulet: Boulet) => {
@@ -596,7 +705,7 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext): P
         for (const onde of ondes) {
             if (!onde.actif) continue
             onde.age += dt
-            let encoreVisible = onde.age < 0.7
+            let encoreVisible = onde.age < DUREE_ECLABOUSSURE
             for (const anneau of onde.anneaux) {
                 const avancement = (onde.age - anneau.delai) / DUREE_ONDE
                 if (avancement < 0 || avancement >= 1) {
@@ -619,26 +728,45 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext): P
                 anneau.materiauEcume.alpha = 0.85 * Math.pow(1 - avancement, 1.5) * anneau.intensite
             }
 
-            const montee = borner(onde.age / 0.22)
-            const descente = borner((onde.age - 0.22) / 0.4)
+            // Gerbe centrale : elle jaillit vite, s'amincit au sommet (le haut se détache en gouttes), retombe.
+            const montee = borner(onde.age / 0.2)
+            const descente = borner((onde.age - 0.2) / 0.5)
             if (descente >= 1) {
                 montrer(onde.jet, false)
             } else {
-                const hauteurJet = 0.9 * montee * (1 - descente)
-                onde.jet.scaling.set(1, Math.max(hauteurJet, 0.001), 1)
+                const hauteurJet = 1.25 * Math.pow(montee, 0.7) * (1 - descente * descente)
+                const largeur = 1 - 0.55 * descente
+                onde.jet.scaling.set(largeur, Math.max(hauteurJet, 0.001), largeur)
                 onde.jet.position.set(onde.x, hauteurJet / 2, onde.z)
-                onde.materiauJet.alpha = 0.8 * (1 - descente)
+                onde.materiauJet.alpha = 0.75 * (1 - descente)
             }
+            // Gouttes : trajectoire balistique (gravité), elles rétrécissent un peu avant de toucher l'eau.
             onde.gouttes.forEach((maillage, index) => {
                 const vitesse = onde.vitesses[index]!
-                const hauteur = vitesse[1] * onde.age - 5 * onde.age * onde.age
-                if (hauteur < 0 || onde.age > 1) {
+                const hauteur = vitesse[1] * onde.age - 0.5 * GRAVITE_GOUTTES * onde.age * onde.age
+                if (hauteur < 0 || onde.age > 1.3) {
                     montrer(maillage, false)
                     return
                 }
-                maillage.position.set(onde.x + vitesse[0] * onde.age, hauteur + 0.05, onde.z + vitesse[2] * onde.age)
+                const taille = onde.tailles[index]! * (hauteur < 0.12 ? 0.4 + 3.3 * hauteur : 1)
+                maillage.scaling.set(taille, taille, taille)
+                maillage.position.set(onde.x + vitesse[0] * onde.age, hauteur + 0.04, onde.z + vitesse[2] * onde.age)
             })
-            if (!encoreVisible && descente >= 1) onde.actif = false
+            // Écume en dentelle : les plaques suivent le front de l'onde, restent à la surface puis se défont.
+            const vieDentelle = borner(onde.age / DUREE_ECLABOUSSURE)
+            onde.materiauDentelle.alpha = 0.85 * Math.pow(1 - vieDentelle, 1.6) * borner(onde.age * 8)
+            onde.dentelle.forEach((plaque) => {
+                const rayon = (0.2 + 1.35 * (1 - Math.pow(1 - borner(onde.age / 1.1), 2))) * plaque.facteur
+                const taille = plaque.taille * (0.6 + 0.9 * borner(onde.age / 0.8)) * (1 - 0.5 * vieDentelle)
+                plaque.maillage.scaling.set(taille, 1, taille * 0.78)
+                plaque.maillage.position.set(onde.x + Math.cos(plaque.angle) * rayon, 0.045, onde.z + Math.sin(plaque.angle) * rayon)
+            })
+            if (!encoreVisible) {
+                onde.actif = false
+                montrer(onde.jet, false)
+                onde.gouttes.forEach((maillage) => montrer(maillage, false))
+                onde.dentelle.forEach((plaque) => montrer(plaque.maillage, false))
+            }
         }
 
         for (const feu of feux) {
