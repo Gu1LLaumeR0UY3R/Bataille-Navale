@@ -53,6 +53,8 @@ const OPACITE_SURFACE = 0.34
 const OPACITE_PAROIS = 0.3
 /** Le quadrillage est posé sur le sable : un peu plus épais que s'il était en surface, il se lit au travers de l'eau. */
 const EPAISSEUR_LIGNE_GRILLE = 0.05
+/** Le trait sombre qui entoure le filet lumineux est plus large que lui de cette valeur. */
+const EPAISSEUR_HALO_GRILLE = 0.09
 const HAUTEUR_LIGNE_GRILLE = FOND_MARIN + 0.03
 const DUREE_NAUFRAGE = 3.5
 const DELAI_NAUFRAGE = 0.4
@@ -292,28 +294,26 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
         effets = await creerEffets(moteur, scene)
         avancer('Mise en place des effets')
 
-        const materiauQuadrillage = materiauColore([0.02, 0.18, 0.24], [0.12, 0.8, 1])
+        // Quadrillage sur le sable, vu à travers l'eau : un large trait sombre (contraste avec le sable clair)
+        // et un filet cyan lumineux par-dessus, pour qu'il reste lisible quelle que soit la houle.
+        const materiauQuadrillage = materiauColore([0.5, 0.95, 1], [0.55, 1, 1])
         materiauQuadrillage.specularColor = [0.3, 0.8, 1]
+        const materiauHalo = materiauColore([0.02, 0.12, 0.2], [0.0, 0.05, 0.1])
         const largeurGrille = TAILLE_GRILLE * TAILLE_CASE
+        const poserLigne = (largeurX: number, profondeurZ: number, x: number, z: number) => {
+            const halo = createBox(moteur, { width: largeurX + (largeurX > profondeurZ ? 0 : EPAISSEUR_HALO_GRILLE), height: 0.02, depth: profondeurZ + (profondeurZ > largeurX ? 0 : EPAISSEUR_HALO_GRILLE) })
+            halo.material = materiauHalo
+            halo.position.set(x, HAUTEUR_LIGNE_GRILLE, z)
+            addToScene(scene, halo)
+            const filet = createBox(moteur, { width: largeurX, height: 0.02, depth: profondeurZ })
+            filet.material = materiauQuadrillage
+            filet.position.set(x, HAUTEUR_LIGNE_GRILLE + 0.012, z)
+            addToScene(scene, filet)
+        }
         for (let index = 0; index <= TAILLE_GRILLE; index++) {
             const position = -largeurGrille / 2 + index * TAILLE_CASE
-            const ligneVerticale = createBox(moteur, {
-                width: EPAISSEUR_LIGNE_GRILLE,
-                height: EPAISSEUR_LIGNE_GRILLE,
-                depth: largeurGrille,
-            })
-            ligneVerticale.material = materiauQuadrillage
-            ligneVerticale.position.set(position, HAUTEUR_LIGNE_GRILLE, 0)
-            addToScene(scene, ligneVerticale)
-
-            const ligneHorizontale = createBox(moteur, {
-                width: largeurGrille,
-                height: EPAISSEUR_LIGNE_GRILLE,
-                depth: EPAISSEUR_LIGNE_GRILLE,
-            })
-            ligneHorizontale.material = materiauQuadrillage
-            ligneHorizontale.position.set(0, HAUTEUR_LIGNE_GRILLE, position)
-            addToScene(scene, ligneHorizontale)
+            poserLigne(EPAISSEUR_LIGNE_GRILLE, largeurGrille, position, 0)
+            poserLigne(largeurGrille, EPAISSEUR_LIGNE_GRILLE, 0, position)
         }
     }
 
