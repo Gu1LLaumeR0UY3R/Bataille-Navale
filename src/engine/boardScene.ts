@@ -294,7 +294,7 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
             agitation: ambiance.agitation,
         })
         creerDecorFondMarin(moteur, scene, { taille: TAILLE_GRILLE + 4, fond: FOND_MARIN, tailleGrille: TAILLE_GRILLE })
-        effets = await creerEffets(moteur, scene)
+        effets = await creerEffets(moteur, scene, { agitation: ambiance.agitation, niveauEau: NIVEAU_EAU })
         avancer('Mise en place des effets')
 
         // Quadrillage sur le sable, vu à travers l'eau : un large trait sombre (contraste avec le sable clair)

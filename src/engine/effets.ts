@@ -30,6 +30,7 @@ import {
     type Mesh,
     type SceneContext,
     type StandardMaterialProps,
+    type Texture2D,
 } from '@babylonjs/lite'
 import { TAILLE_GRILLE, type Couleur } from '../game/types.ts'
 import { TAILLE_CASE, caseVersMonde } from './boardGeometry.ts'
@@ -70,6 +71,10 @@ const BOUFFEES_PAR_FEU = 3
 const HAUTEUR_FEU = 0.32
 
 const borner = (valeur: number, minimum = 0, maximum = 1) => Math.min(maximum, Math.max(minimum, valeur))
+const lisser = (valeur: number) => {
+    const t = borner(valeur)
+    return t * t * (3 - 2 * t)
+}
 const hasard = (minimum: number, maximum: number) => minimum + Math.random() * (maximum - minimum)
 const melange = (depart: number, arrivee: number, avancement: number) => depart + (arrivee - depart) * avancement
 
@@ -116,7 +121,7 @@ export interface OptionsEau {
 }
 
 /** Finesse du maillage de l'eau : assez fin pour que les petites vagues et les impacts se voient. */
-const SUBDIVISIONS_EAU = 72
+const SUBDIVISIONS_EAU = 88
 /** Nombre de fois que la texture d'écume se répète sur la surface de l'eau (plus grand = motif plus fin). */
 const REPETITION_ECUME = 3.2
 const OPACITE_SURCOUCHE_ECUME = 0.9
@@ -156,24 +161,31 @@ function ajouterImpactEau(scene: SceneContext, x: number, z: number, force = 1) 
 }
 
 /**
- * Hauteur ajoutée à la surface par les impacts, à la distance r du point d'entrée et à l'âge a :
- *   h(r, a) = F · [ A · e^(−a/τ) · e^(−r/L) · cos(k·(r − c·a)) · E(r, a)  −  P · e^(−r²/s²) · e^(−a/τc) ]
- * - le cosinus est l'onde circulaire qui s'éloigne à la vitesse c ;
- * - e^(−r/L) l'affaiblit avec la distance (la même énergie sur un cercle de plus en plus grand) ;
- * - e^(−a/τ) l'amortit avec le temps (viscosité) ;
- * - E(r, a) vaut 1 derrière le front et chute à 0 devant : l'eau ne bouge pas avant que l'onde arrive ;
- * - le dernier terme est le cratère creusé à l'entrée du boulet, qui se comble vite.
+ * Hauteur ajoutée à la surface par les impacts, à la distance r du point d'entrée et à l'âge a.
+ * Un boulet qui entre dans l'eau déforme la mer en quatre temps, tous calculés ici :
+ *   1. un CRATÈRE se creuse à l'entrée et se comble vite :           −P · e^(−r²/s²) · e^(−a/τ)
+ *   2. un BOURRELET (la couronne) est repoussé et s'écarte :           C · e^(−a/τc) · e^(−((r − Rc(a))/w(a))²)
+ *      avec Rc(a) = R0 + V·a^0,65 (il ralentit) et w(a) qui s'élargit
+ *   3. une COLONNE centrale jaillit puis retombe (effet Worthington) : H · sin(π·φ(a)) · e^(−r²/s²)
+ *   4. des ONDULATIONS s'éloignent à la vitesse c et s'amortissent :  A · e^(−a/τ) · e^(−r/L) · cos(k·(r − c·a)) · E(r, a)
+ *      (E vaut 1 derrière le front d'onde et chute à 0 devant : l'eau ne bouge pas avant que l'onde arrive)
  */
 function hauteurImpacts(x: number, z: number, impacts: readonly ImpactEau[]): number {
     let somme = 0
     for (const impact of impacts) {
         const r = Math.hypot(x - impact.x, z - impact.z)
         const a = impact.age
+        const cratere = -0.2 * Math.exp(-(r * r) / 0.07) * Math.exp(-a / 0.2)
+        const rayonCouronne = 0.22 + 0.95 * Math.pow(a, 0.65)
+        const largeurCouronne = 0.12 + 0.1 * a
+        const ecart = (r - rayonCouronne) / largeurCouronne
+        const couronne = 0.2 * Math.exp(-a / 0.45) * Math.exp(-ecart * ecart)
+        const phaseColonne = Math.min(1, Math.max(0, (a - 0.1) / 0.55))
+        const colonne = 0.34 * Math.sin(Math.PI * phaseColonne) * Math.exp(-(r * r) / 0.05)
         const devantLeFront = r - (VITESSE_ONDE * a + 0.35)
         const enveloppe = devantLeFront <= 0 ? 1 : Math.exp(-(devantLeFront * devantLeFront) / 0.06)
-        const ondes = 0.075 * Math.exp(-a / 1.1) * Math.exp(-r / 1.3) * Math.cos(NOMBRE_D_ONDE * (r - VITESSE_ONDE * a)) * enveloppe
-        const cratere = -0.14 * Math.exp(-(r * r) / 0.05) * Math.exp(-a / 0.22)
-        somme += impact.force * (ondes + cratere)
+        const ondes = 0.07 * Math.exp(-a / 1.1) * Math.exp(-r / 1.3) * Math.cos(NOMBRE_D_ONDE * (r - VITESSE_ONDE * a)) * enveloppe
+        somme += impact.force * (cratere + couronne + colonne + ondes)
     }
     return somme
 }
@@ -489,6 +501,25 @@ interface Onde {
     /** Écume en dentelle : de petites plaques blanches qui suivent la vague puis se défont. */
     dentelle: { maillage: Mesh, angle: number, facteur: number, taille: number }[]
     materiauDentelle: StandardMaterialProps
+    /** Écume de l'impact (texture PNG posée sur l'eau), si la texture est disponible. */
+    plan: PlanEcume | null
+}
+
+/** Un carré subdivisé posé sur l'eau, qui épouse les vagues, avec la texture d'écume. */
+interface PlanEcume {
+    maillage: Mesh
+    positions: Float32Array
+    couleurs: Float32Array
+    /** Décalages (x, z) de chaque sommet dans le carré unité, de −0,5 à 0,5. */
+    local: Float32Array
+    x: number
+    z: number
+    angle: number
+    taille: number
+    alpha: number
+    age: number
+    actif: boolean
+    couleursAJour: boolean
 }
 
 interface Bouffee {
@@ -513,9 +544,105 @@ interface Tache {
     action: () => void
 }
 
-export async function creerEffets(moteur: EngineContext, scene: SceneContext): Promise<Effets> {
+export interface OptionsEffets {
+    /** Agitation de la mer de la carte (la même que celle de l'eau). */
+    agitation?: number
+    /** Hauteur moyenne de l'eau : les éclaboussures et l'écume y sont posées. */
+    niveauEau?: number
+}
+
+export async function creerEffets(moteur: EngineContext, scene: SceneContext, options: OptionsEffets = {}): Promise<Effets> {
     let temps = 0
     const taches: Tache[] = []
+    const agitation = options.agitation ?? AGITATION_DEFAUT
+    const niveauEau = options.niveauEau ?? 0
+    const impactsEau = impactsDeLaScene(scene)
+    enableStandardVertexColors()
+
+    // --- Écume d'impact : la texture PNG, posée sur l'eau -------------------------------------
+    // Sans le fichier, on garde l'ancienne écume faite de petites plaques.
+    let textureImpact: Texture2D | null = null
+    try {
+        textureImpact = await loadTexture2D(moteur, `${import.meta.env.BASE_URL}images/ecume/ecume-impact.png`)
+    } catch {
+        textureImpact = null
+    }
+    const materiauPlanEcume = (() => {
+        if (!textureImpact) return null
+        const materiau = createStandardMaterial()
+        materiau.alpha = 0.99
+        materiau.diffuseColor = [1, 1, 1]
+        materiau.emissiveColor = [0.62, 0.66, 0.68]
+        materiau.specularColor = [0, 0, 0]
+        materiau.backFaceCulling = false
+        setStandardOpacityTexture(materiau, textureImpact)
+        materiau.opacityLevel = 1
+        return materiau
+    })()
+    const creerPlanEcume = (nom: string, divisions: number): PlanEcume | null => {
+        if (!materiauPlanEcume) return null
+        const colonnes = divisions + 1
+        const nombre = colonnes * colonnes
+        const positions = new Float32Array(nombre * 3)
+        const normales = new Float32Array(nombre * 3)
+        const uvs = new Float32Array(nombre * 2)
+        const local = new Float32Array(nombre * 2)
+        const couleurs = new Float32Array(nombre * 4).fill(1)
+        const indices = new Uint32Array(divisions * divisions * 6)
+        for (let rangee = 0; rangee < colonnes; rangee++) {
+            for (let colonne = 0; colonne < colonnes; colonne++) {
+                const sommet = rangee * colonnes + colonne
+                local[sommet * 2] = colonne / divisions - 0.5
+                local[sommet * 2 + 1] = rangee / divisions - 0.5
+                uvs[sommet * 2] = colonne / divisions
+                uvs[sommet * 2 + 1] = 1 - rangee / divisions
+                normales[sommet * 3 + 1] = 1
+            }
+        }
+        let cible = 0
+        for (let rangee = 0; rangee < divisions; rangee++) {
+            for (let colonne = 0; colonne < divisions; colonne++) {
+                const a = rangee * colonnes + colonne
+                const b = a + 1
+                const c = a + colonnes
+                const d = c + 1
+                indices.set([a, c, b, b, c, d], cible)
+                cible += 6
+            }
+        }
+        const maillage = createMeshFromData(moteur, nom, positions, normales, indices, uvs, undefined, undefined, couleurs)
+        maillage.material = materiauPlanEcume
+        maillage.hasVertexAlpha = true
+        addToScene(scene, maillage)
+        setSubtreeVisible(maillage, false)
+        return { maillage, positions, couleurs, local, x: 0, z: 0, angle: 0, taille: 1, alpha: 0, age: 0, actif: false, couleursAJour: false }
+    }
+    /** Recalcule le carré : il suit la surface de l'eau (vagues + déformation de l'impact). */
+    const poserPlanSurLEau = (plan: PlanEcume) => {
+        const cosinus = Math.cos(plan.angle)
+        const sinus = Math.sin(plan.angle)
+        const nombre = plan.local.length / 2
+        for (let sommet = 0; sommet < nombre; sommet++) {
+            const lx = plan.local[sommet * 2]! * plan.taille
+            const lz = plan.local[sommet * 2 + 1]! * plan.taille
+            const x = plan.x + lx * cosinus - lz * sinus
+            const z = plan.z + lx * sinus + lz * cosinus
+            plan.positions[sommet * 3] = x
+            plan.positions[sommet * 3 + 1] = niveauEau + hauteurVague(x, z, temps, agitation) + hauteurImpacts(x, z, impactsEau) + 0.02
+            plan.positions[sommet * 3 + 2] = z
+            if (!plan.couleursAJour) plan.couleurs[sommet * 4 + 3] = plan.alpha
+        }
+        updateMeshPositions(moteur, plan.maillage, plan.positions)
+        if (!plan.couleursAJour) {
+            updateMeshColors(moteur, plan.maillage, plan.couleurs)
+            plan.couleursAJour = true
+        }
+    }
+    const regler = (plan: PlanEcume, alpha: number, taille: number) => {
+        if (Math.abs(alpha - plan.alpha) > 0.004) plan.couleursAJour = false
+        plan.alpha = alpha
+        plan.taille = taille
+    }
 
     // --- Boulets -------------------------------------------------------------------------------
     const materielBoulet = await creerMateriau([0.1, 0.1, 0.12], [0.04, 0.04, 0.05])
@@ -587,6 +714,7 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext): P
                 taille: 0.15,
             })),
             materiauDentelle,
+            plan: creerPlanEcume(`ecume_impact_${index}`, 10),
         })
     }
 
@@ -621,39 +749,51 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext): P
     const materielEcume = await creerMateriau([0.95, 0.98, 1], [0.5, 0.55, 0.58], 0.92)
     const materielMousse = await creerMateriau([0.7, 0.9, 0.95], [0.2, 0.3, 0.33], 0.4)
     const materielBrulure = await creerMateriau([0.06, 0.05, 0.05], [0.1, 0.03, 0.0])
-    const ecumes: ReturnType<typeof createTransformNode>[][] = []
+    const ecumes: (ReturnType<typeof createTransformNode> | undefined)[][] = []
+    /** Avec la texture : une feuille d'écume par case, posée sur l'eau, qui reste toute la partie. */
+    const planCases: (PlanEcume | null)[][] = []
     const brulures: Mesh[][] = []
     for (let ligne = 0; ligne < TAILLE_GRILLE; ligne++) {
         ecumes.push([])
+        planCases.push([])
         brulures.push([])
         for (let colonne = 0; colonne < TAILLE_GRILLE; colonne++) {
             const { x, z } = caseVersMonde({ colonne, ligne })
 
-            const groupe = createTransformNode(`ecume_${colonne}_${ligne}`, x, 0, z)
+            const plan = creerPlanEcume(`ecume_case_${colonne}_${ligne}`, 6)
+            planCases[ligne]!.push(plan)
+            if (plan) {
+                plan.x = x
+                plan.z = z
+                plan.angle = ((colonne * 53 + ligne * 97) % 360) * (Math.PI / 180) // un motif orienté différemment par case
+            }
+            const groupe = plan ? undefined : createTransformNode(`ecume_${colonne}_${ligne}`, x, 0, z)
             // Écume en dentelle : un voile turquoise pâle et des plaques blanches irrégulières posées en couronne,
             // avec des trous entre elles (comme l'écume d'une mer agitée vue de haut). Chaque case a son motif,
             // fixé par sa position pour qu'il ne change pas d'un affichage à l'autre.
-            const nappe = createCylinder(moteur, { height: 0.012, diameter: 0.7, tessellation: 20 })
-            nappe.material = materielMousse
-            nappe.position.set(0, 0.012, 0)
-            groupe.children.push(nappe)
-            const graine = (colonne * 7 + ligne * 13 + 3) % 17
-            const pseudoHasard = (rang: number) => {
-                const valeur = Math.sin((graine + 1) * 12.9898 + rang * 78.233) * 43758.5453
-                return valeur - Math.floor(valeur)
+            if (groupe) {
+                const nappe = createCylinder(moteur, { height: 0.012, diameter: 0.7, tessellation: 20 })
+                nappe.material = materielMousse
+                nappe.position.set(0, 0.012, 0)
+                groupe.children.push(nappe)
+                const graine = (colonne * 7 + ligne * 13 + 3) % 17
+                const pseudoHasard = (rang: number) => {
+                    const valeur = Math.sin((graine + 1) * 12.9898 + rang * 78.233) * 43758.5453
+                    return valeur - Math.floor(valeur)
+                }
+                for (let plaque = 0; plaque < PLAQUES_ECUME_PAR_CASE; plaque++) {
+                    const angle = (plaque / PLAQUES_ECUME_PAR_CASE) * Math.PI * 2 + pseudoHasard(plaque) * 0.9
+                    const rayon = 0.16 + pseudoHasard(plaque + 20) * 0.2
+                    const taille = 0.13 + pseudoHasard(plaque + 40) * 0.13
+                    const morceau = createCylinder(moteur, { height: 0.016, diameter: taille, tessellation: 9 })
+                    morceau.material = materielEcume
+                    morceau.scaling.set(1, 1, 0.7 + pseudoHasard(plaque + 60) * 0.5)
+                    morceau.position.set(Math.cos(angle) * rayon, 0.028, Math.sin(angle) * rayon)
+                    groupe.children.push(morceau)
+                }
+                addToScene(scene, groupe)
+                setSubtreeVisible(groupe, false)
             }
-            for (let plaque = 0; plaque < PLAQUES_ECUME_PAR_CASE; plaque++) {
-                const angle = (plaque / PLAQUES_ECUME_PAR_CASE) * Math.PI * 2 + pseudoHasard(plaque) * 0.9
-                const rayon = 0.16 + pseudoHasard(plaque + 20) * 0.2
-                const taille = 0.13 + pseudoHasard(plaque + 40) * 0.13
-                const morceau = createCylinder(moteur, { height: 0.016, diameter: taille, tessellation: 9 })
-                morceau.material = materielEcume
-                morceau.scaling.set(1, 1, 0.7 + pseudoHasard(plaque + 60) * 0.5)
-                morceau.position.set(Math.cos(angle) * rayon, 0.028, Math.sin(angle) * rayon)
-                groupe.children.push(morceau)
-            }
-            addToScene(scene, groupe)
-            setSubtreeVisible(groupe, false)
             ecumes[ligne]!.push(groupe)
 
             const brulure = ajouter(scene, createCylinder(moteur, { height: 0.02, diameter: 0.64, tessellation: 20 }), materielBrulure)
@@ -704,7 +844,19 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext): P
         })
         montrer(onde.jet, true)
         onde.gouttes.forEach((maillage) => montrer(maillage, true))
-        onde.dentelle.forEach((plaque) => montrer(plaque.maillage, true))
+        if (onde.plan) {
+            // L'écume PNG remplace les plaques et les anneaux : elle part du point d'impact et s'étale.
+            onde.plan.x = x
+            onde.plan.z = z
+            onde.plan.angle = hasard(0, Math.PI * 2)
+            onde.plan.age = 0
+            onde.plan.actif = true
+            onde.plan.couleursAJour = false
+            regler(onde.plan, 0, 0.6)
+            montrer(onde.plan.maillage, true)
+        } else {
+            onde.dentelle.forEach((plaque) => montrer(plaque.maillage, true))
+        }
         ajouterImpactEau(scene, x, z)
     }
 
@@ -789,7 +941,7 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext): P
             let encoreVisible = onde.age < DUREE_ECLABOUSSURE
             for (const anneau of onde.anneaux) {
                 const avancement = (onde.age - anneau.delai) / DUREE_ONDE
-                if (avancement < 0 || avancement >= 1) {
+                if (onde.plan || avancement < 0 || avancement >= 1) {
                     montrer(anneau.vague, false)
                     montrer(anneau.ecume, false)
                     continue
@@ -818,7 +970,7 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext): P
                 const hauteurJet = 1.25 * Math.pow(montee, 0.7) * (1 - descente * descente)
                 const largeur = 1 - 0.55 * descente
                 onde.jet.scaling.set(largeur, Math.max(hauteurJet, 0.001), largeur)
-                onde.jet.position.set(onde.x, hauteurJet / 2, onde.z)
+                onde.jet.position.set(onde.x, niveauEau + hauteurJet / 2, onde.z)
                 onde.materiauJet.alpha = 0.75 * (1 - descente)
             }
             // Gouttes : trajectoire balistique (gravité), elles rétrécissent un peu avant de toucher l'eau.
@@ -831,7 +983,7 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext): P
                 }
                 const taille = onde.tailles[index]! * (hauteur < 0.12 ? 0.4 + 3.3 * hauteur : 1)
                 maillage.scaling.set(taille, taille, taille)
-                maillage.position.set(onde.x + vitesse[0] * onde.age, hauteur + 0.04, onde.z + vitesse[2] * onde.age)
+                maillage.position.set(onde.x + vitesse[0] * onde.age, niveauEau + hauteur + 0.04, onde.z + vitesse[2] * onde.age)
             })
             // Écume en dentelle : les plaques suivent le front de l'onde, restent à la surface puis se défont.
             const vieDentelle = borner(onde.age / DUREE_ECLABOUSSURE)
@@ -842,11 +994,34 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext): P
                 plaque.maillage.scaling.set(taille, 1, taille * 0.78)
                 plaque.maillage.position.set(onde.x + Math.cos(plaque.angle) * rayon, 0.045, onde.z + Math.sin(plaque.angle) * rayon)
             })
+            if (onde.plan) {
+                // Écume PNG : elle grandit vite (le souffle de l'impact), puis reste et se dissout doucement.
+                const etalement = 1 - Math.pow(1 - borner(onde.age / 0.9), 2)
+                const apparition = borner(onde.age / 0.12)
+                const dissolution = 1 - lisser((onde.age - 0.9) / (DUREE_ECLABOUSSURE - 0.9))
+                regler(onde.plan, 0.95 * apparition * dissolution, 0.7 + 1.5 * etalement)
+                poserPlanSurLEau(onde.plan)
+            }
             if (!encoreVisible) {
+                if (onde.plan) {
+                    onde.plan.actif = false
+                    montrer(onde.plan.maillage, false)
+                }
                 onde.actif = false
                 montrer(onde.jet, false)
                 onde.gouttes.forEach((maillage) => montrer(maillage, false))
                 onde.dentelle.forEach((plaque) => montrer(plaque.maillage, false))
+            }
+        }
+
+        // Écume restée sur les cases où un tir est tombé à l'eau : elle apparaît puis suit les vagues.
+        for (const rangee of planCases) {
+            for (const plan of rangee) {
+                if (!plan || !plan.actif) continue
+                plan.age += dt
+                const arrivee = borner(plan.age / 0.6)
+                regler(plan, 0.82 * lisser(arrivee * 1.4), (0.62 + 0.44 * (1 - Math.pow(1 - arrivee, 2))) * TAILLE_CASE)
+                poserPlanSurLEau(plan)
             }
         }
 
@@ -915,6 +1090,13 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext): P
             }
         },
         definirEcume(colonne, ligne, actif) {
+            const plan = planCases[ligne]![colonne]
+            if (plan) {
+                if (actif && !plan.actif) plan.age = 0
+                plan.actif = actif
+                setSubtreeVisible(plan.maillage, actif)
+                return
+            }
             setSubtreeVisible(ecumes[ligne]![colonne]!, actif)
         },
         definirTraceBrulure(colonne, ligne, actif) {
