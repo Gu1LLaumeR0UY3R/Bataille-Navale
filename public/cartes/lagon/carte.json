@@ -2,6 +2,7 @@
     "nom": "Le lagon",
     "description": "Mer calme sous un soleil haut.",
     "ambiance": {
+        "agitation": 0.15,
         "eau": [
             0.04,
             0.4,

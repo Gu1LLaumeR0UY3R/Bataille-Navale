@@ -2,6 +2,7 @@
     "nom": "L'aube",
     "description": "Lumière rasante et ciel rosé, quelques bouées.",
     "ambiance": {
+        "agitation": 0.25,
         "eau": [
             0.1,
             0.36,

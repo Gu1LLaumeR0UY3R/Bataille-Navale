@@ -2,6 +2,7 @@
     "nom": "Les tropiques",
     "description": "Eau turquoise, îlots de sable et rochers.",
     "ambiance": {
+        "agitation": 0.2,
         "eau": [
             0.05,
             0.62,

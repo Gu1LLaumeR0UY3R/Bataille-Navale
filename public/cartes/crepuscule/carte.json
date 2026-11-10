@@ -2,6 +2,7 @@
     "nom": "Le crépuscule",
     "description": "Soleil couchant orangé sur une mer profonde.",
     "ambiance": {
+        "agitation": 0.5,
         "eau": [
             0.07,
             0.22,

@@ -9,6 +9,7 @@ const RACINE = `${import.meta.env.BASE_URL}cartes/`
 
 export const AMBIANCE_DEFAUT: Ambiance = {
     eau: [0.04, 0.4, 0.52],
+    agitation: 0.25,
     ciel: [0.12, 0.36, 0.52],
     lumiereCiel: { couleur: [0.78, 0.9, 1], intensite: 0.85 },
     soleil: { direction: [0.35, -0.85, 0.5], couleur: [1, 0.93, 0.76], intensite: 0.85 },
@@ -39,6 +40,7 @@ function lireAmbiance(brut: unknown): Ambiance {
     const d = AMBIANCE_DEFAUT
     return {
         eau: couleur(a.eau, d.eau),
+        agitation: nombre(a.agitation, d.agitation, 0, 1),
         ciel: couleur(a.ciel, d.ciel),
         lumiereCiel: {
             couleur: couleur(ciel.couleur, d.lumiereCiel.couleur),

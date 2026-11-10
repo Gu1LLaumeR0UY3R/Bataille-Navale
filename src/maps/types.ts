@@ -8,6 +8,8 @@ export type Vec3 = [number, number, number]
 export interface Ambiance {
     /** Couleur de la mer. */
     eau: Couleur
+    /** Agitation de la mer, de 0 (calme plat) à 1 (tempête) : hauteur des vagues, chaos et écume des crêtes. */
+    agitation: number
     /** Couleur du ciel (fond de la scène). */
     ciel: Couleur
     /** Lumière d'ambiance venue du ciel. */

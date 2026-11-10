@@ -2,6 +2,7 @@
     "nom": "La mer du Nord",
     "description": "Mer grise, ciel voilé, récifs sombres.",
     "ambiance": {
+        "agitation": 0.75,
         "eau": [
             0.2,
             0.32,

@@ -15,6 +15,7 @@ Une carte invalide est ignorée, avec un avertissement dans la console du naviga
     "description": "Une phrase pour le menu.",
     "apercu": "apercu.png",
     "ambiance": {
+        "agitation": 0.25,
         "eau": [0.04, 0.4, 0.52],
         "ciel": [0.12, 0.36, 0.52],
         "lumiereCiel": { "couleur": [0.78, 0.9, 1], "intensite": 0.85 },
@@ -27,6 +28,7 @@ Une carte invalide est ignorée, avec un avertissement dans la console du naviga
 }
 ```
 
+- `agitation` : mer de 0 (calme plat) à 1 (tempête). Plus elle monte, plus les vagues sont hautes, irrégulières et couvertes d'écume sur les crêtes. Facultatif (0,25 par défaut).
 - Couleurs : `[rouge, vert, bleu]`, de 0 à 1.
 - `soleil.direction` : sens de la lumière. `[0.35, -0.85, 0.5]` = soleil haut derrière la caméra (peu de reflets). Mettre un `z` négatif donne un soleil face à la caméra : plus de reflets.
 - `apercu` : image facultative (dans le dossier de la carte). Sans elle, un aperçu est dessiné avec les couleurs de l'ambiance.

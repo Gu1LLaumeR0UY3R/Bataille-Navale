@@ -17,10 +17,15 @@ import {
     createTorus,
     createTransformNode,
     enableMaterialTracking,
+    enableStandardVertexColors,
+    loadTexture2D,
     onBeforeRender,
+    setStandardOpacityTexture,
     setSubtreeVisible,
+    updateMeshColors,
     updateMeshNormals,
     updateMeshPositions,
+    updateMeshUvs,
     type EngineContext,
     type Mesh,
     type SceneContext,
@@ -28,6 +33,7 @@ import {
 } from '@babylonjs/lite'
 import { TAILLE_GRILLE, type Couleur } from '../game/types.ts'
 import { TAILLE_CASE, caseVersMonde } from './boardGeometry.ts'
+import { AGITATION_DEFAUT, ecumeCrete, hauteurVague } from './vagues.ts'
 
 export type ResultatImpact = 'rate' | 'touche' | 'coule'
 
@@ -105,10 +111,17 @@ export interface OptionsEau {
      * près de la surface reste net ; plus on descend, plus le regard traverse de strates et plus c'est voilé.
      */
     strates?: { nombre: number, opacite: number, couleurFond: Couleur }
+    /** Agitation de la mer : 0 = calme, 1 = tempête (hauteur, chaos et écume des crêtes). */
+    agitation?: number
 }
 
-const SUBDIVISIONS_EAU = 40
-const AMPLITUDE_EAU = 1
+/** Finesse du maillage de l'eau : assez fin pour que les petites vagues et les impacts se voient. */
+const SUBDIVISIONS_EAU = 72
+/** Nombre de fois que la texture d'écume se répète sur la surface de l'eau (plus grand = motif plus fin). */
+const REPETITION_ECUME = 3.2
+const OPACITE_SURCOUCHE_ECUME = 0.9
+/** Part d'écume en couleur de sommet conservée sous la texture : un voile léger, pour que l'écume ne flotte pas. */
+const ECUME_SURFACE_AVEC_TEXTURE = 0.3
 
 /** Un boulet qui entre dans l'eau : la surface réagit pendant `DUREE_IMPACT_EAU` secondes. */
 interface ImpactEau {
@@ -124,7 +137,6 @@ const IMPACTS_EAU_MAX = 6
 const VITESSE_ONDE = 1.5
 /** Nombre d'onde : 2π / longueur d'onde (≈ 0,9 de la case). */
 const NOMBRE_D_ONDE = 7
-const AUCUN_IMPACT: readonly ImpactEau[] = []
 const impactsParScene = new WeakMap<SceneContext, ImpactEau[]>()
 
 const impactsDeLaScene = (scene: SceneContext): ImpactEau[] => {
@@ -166,25 +178,6 @@ function hauteurImpacts(x: number, z: number, impacts: readonly ImpactEau[]): nu
     return somme
 }
 
-/** Hauteur de la surface (et pente) au point (x, z), à l'instant `temps`, relativement au niveau moyen. */
-function surfaceEau(x: number, z: number, temps: number, impacts: readonly ImpactEau[] = AUCUN_IMPACT) {
-    // Trois sinusoïdes de directions et de vitesses différentes : la surface ne se répète pas à l'œil.
-    const phaseA = 1.6 * x + 1.1 * temps
-    const phaseB = 1.2 * z - 0.9 * temps
-    const phaseC = 2.4 * (x + z) + 1.7 * temps
-    let hauteur = (0.05 * Math.sin(phaseA) + 0.04 * Math.sin(phaseB) + 0.025 * Math.sin(phaseC)) * AMPLITUDE_EAU
-    let penteX = 0.05 * 1.6 * Math.cos(phaseA) + 0.025 * 2.4 * Math.cos(phaseC)
-    let penteZ = 0.04 * 1.2 * Math.cos(phaseB) + 0.025 * 2.4 * Math.cos(phaseC)
-    if (impacts.length > 0) {
-        // Pente des impacts par différences finies (la formule est lisse, 0,06 suffit).
-        const e = 0.06
-        hauteur += hauteurImpacts(x, z, impacts)
-        penteX += (hauteurImpacts(x + e, z, impacts) - hauteurImpacts(x - e, z, impacts)) / (2 * e)
-        penteZ += (hauteurImpacts(x, z + e, impacts) - hauteurImpacts(x, z - e, impacts)) / (2 * e)
-    }
-    return { hauteur, penteX, penteZ }
-}
-
 /** Part de la profondeur occupée par la tranche claire (près de la surface) des parois. */
 const PART_TRANCHE_CLAIRE = 0.4
 
@@ -200,7 +193,10 @@ function materiauEau(couleur: Couleur, luminosite: number, emission: number, bri
     return materiau
 }
 
-export function creerEau(moteur: EngineContext, scene: SceneContext, options: OptionsEau): void {
+export async function creerEau(moteur: EngineContext, scene: SceneContext, options: OptionsEau): Promise<void> {
+    // Couleurs par sommet : la surface se teinte en blanc là où la houle déferle (écume des crêtes).
+    enableStandardVertexColors()
+    const agitation = options.agitation ?? AGITATION_DEFAUT
     const opacite = options.opacite ?? { surface: 1, parois: 1 }
     const colonnes = SUBDIVISIONS_EAU + 1
     const nombreSommets = colonnes * colonnes
@@ -285,30 +281,67 @@ export function creerEau(moteur: EngineContext, scene: SceneContext, options: Op
     })
 
     const impacts = impactsDeLaScene(scene)
+    const hauteurs = new Float32Array(nombreSommets)
+    const pas = options.taille / SUBDIVISIONS_EAU
+    // Couleur par sommet : teinte de l'eau (la matière est blanche, la couleur passe ici) et opacité.
+    // alpha < 1 dès la création : sinon BabylonLite rend le matériau comme opaque.
+    const alphaMateriau = opacite.surface >= 1 ? 1 : 0.99
+    const alphaEau = opacite.surface / alphaMateriau
+    const COULEUR_ECUME: Couleur = [0.92, 0.97, 1]
+    const OPACITE_ECUME = 0.8
+    const couleurs = new Float32Array(nombreSommets * 4)
+    /** Écume des crêtes en chaque sommet (0 à 1) : sert de masque à la texture d'écume. */
+    const masqueEcume = new Float32Array(nombreSommets)
+    /** Part de blanc appliquée directement à l'eau : réduite quand la texture d'écume prend le relais. */
+    let partEcumeSurface = 1
     let temps = 0
     const calculer = () => {
         for (let sommet = 0; sommet < nombreSommets; sommet++) {
             const x = positions[sommet * 3]!
             const z = positions[sommet * 3 + 2]!
-            const { hauteur, penteX, penteZ } = surfaceEau(x, z, temps, impacts)
-            positions[sommet * 3 + 1] = options.niveau + hauteur
-            // Normale = (-dh/dx, 1, -dh/dz), normalisée.
-            const longueur = Math.hypot(penteX, 1, penteZ)
-            normales[sommet * 3] = -penteX / longueur
-            normales[sommet * 3 + 1] = 1 / longueur
-            normales[sommet * 3 + 2] = -penteZ / longueur
+            const houle = hauteurVague(x, z, temps, agitation)
+            hauteurs[sommet] = houle + (impacts.length > 0 ? hauteurImpacts(x, z, impacts) : 0)
+            positions[sommet * 3 + 1] = options.niveau + hauteurs[sommet]!
+            const ecume = ecumeCrete(houle, x, z, temps, agitation)
+            masqueEcume[sommet] = ecume
+            const blanc = ecume * partEcumeSurface
+            couleurs[sommet * 4] = options.couleur[0] + (COULEUR_ECUME[0] - options.couleur[0]) * blanc
+            couleurs[sommet * 4 + 1] = options.couleur[1] + (COULEUR_ECUME[1] - options.couleur[1]) * blanc
+            couleurs[sommet * 4 + 2] = options.couleur[2] + (COULEUR_ECUME[2] - options.couleur[2]) * blanc
+            couleurs[sommet * 4 + 3] = alphaEau + (OPACITE_ECUME - alphaEau) * blanc
+        }
+        // Normales : pente de la surface, lue sur les points voisins du maillage (ligne 0 = z maximal).
+        for (let rangee = 0; rangee < colonnes; rangee++) {
+            const haut = Math.max(rangee - 1, 0)
+            const bas = Math.min(rangee + 1, colonnes - 1)
+            for (let colonne = 0; colonne < colonnes; colonne++) {
+                const gauche = Math.max(colonne - 1, 0)
+                const droite = Math.min(colonne + 1, colonnes - 1)
+                const penteX = (hauteurs[rangee * colonnes + droite]! - hauteurs[rangee * colonnes + gauche]!) / ((droite - gauche) * pas)
+                const penteZ = (hauteurs[haut * colonnes + colonne]! - hauteurs[bas * colonnes + colonne]!) / ((bas - haut) * pas)
+                const sommet = rangee * colonnes + colonne
+                const longueur = Math.hypot(penteX, 1, penteZ)
+                normales[sommet * 3] = -penteX / longueur
+                normales[sommet * 3 + 1] = 1 / longueur
+                normales[sommet * 3 + 2] = -penteZ / longueur
+            }
         }
         for (let sommet = 0; sommet < cotes.length * colonnes; sommet++) {
             const indiceHaut = sommet * 2
-            positionsParois[indiceHaut * 3 + 1] = options.niveau +
-                surfaceEau(positionsParois[indiceHaut * 3]!, positionsParois[indiceHaut * 3 + 2]!, temps, impacts).hauteur
+            const x = positionsParois[indiceHaut * 3]!
+            const z = positionsParois[indiceHaut * 3 + 2]!
+            positionsParois[indiceHaut * 3 + 1] = options.niveau + hauteurVague(x, z, temps, agitation) + hauteurImpacts(x, z, impacts)
         }
     }
     calculer()
 
     // Surface
-    const eau = createMeshFromData(moteur, 'eau_profonde', positions, normales, indices, uvs)
-    eau.material = materiauEau(options.couleur, 1, 0.25, true, opacite.surface)
+    const eau = createMeshFromData(moteur, 'eau_profonde', positions, normales, indices, uvs, undefined, undefined, couleurs)
+    const materiauSurface = materiauEau(options.couleur, 1, 0.25, true, alphaMateriau)
+    materiauSurface.diffuseColor = [1, 1, 1] // la teinte vient des couleurs par sommet
+    eau.material = materiauSurface
+    // Sans ce drapeau, Lite ignore l'opacité par sommet : l'eau serait rendue presque opaque (donc sombre).
+    eau.hasVertexAlpha = true
     addToScene(scene, eau)
 
     // Tranche claire des parois (animée) : l'épaisseur de l'eau vue de côté
@@ -343,6 +376,38 @@ export function creerEau(moteur: EngineContext, scene: SceneContext, options: Op
         addToScene(scene, profond)
     }
 
+    // Écume des crêtes : une texture de dentelle (public/images/ecume/ecume-crete.png) posée juste au-dessus de
+    // l'eau, qui épouse les vagues et dérive lentement. Les crêtes (masqueEcume) règlent où elle apparaît ;
+    // la texture donne le détail fin. Sans le fichier, l'eau garde simplement son écume en couleurs de sommets.
+    let surcouche: {
+        maillage: Mesh
+        positions: Float32Array
+        couleurs: Float32Array
+        uvs: Float32Array
+    } | null = null
+    try {
+        const texture = await loadTexture2D(moteur, `${import.meta.env.BASE_URL}images/ecume/ecume-crete.png`)
+        const positionsEcume = Float32Array.from(positions)
+        const couleursEcume = new Float32Array(nombreSommets * 4).fill(1)
+        const uvsEcume = new Float32Array(uvs.length)
+        const maillage = createMeshFromData(moteur, 'eau_ecume_cretes', positionsEcume, normales, indices, uvsEcume, undefined, undefined, couleursEcume)
+        const materiauEcume = createStandardMaterial()
+        materiauEcume.alpha = 0.99
+        materiauEcume.diffuseColor = [1, 1, 1]
+        materiauEcume.emissiveColor = [0.55, 0.6, 0.62]
+        materiauEcume.specularColor = [0, 0, 0]
+        materiauEcume.backFaceCulling = false
+        setStandardOpacityTexture(materiauEcume, texture)
+        materiauEcume.opacityLevel = 1
+        maillage.material = materiauEcume
+        maillage.hasVertexAlpha = true
+        addToScene(scene, maillage)
+        surcouche = { maillage, positions: positionsEcume, couleurs: couleursEcume, uvs: uvsEcume }
+        partEcumeSurface = ECUME_SURFACE_AVEC_TEXTURE
+    } catch {
+        surcouche = null
+    }
+
     onBeforeRender(scene, (deltaMs) => {
         const dt = Math.min(deltaMs, 50) / 1000
         temps += dt
@@ -353,7 +418,23 @@ export function creerEau(moteur: EngineContext, scene: SceneContext, options: Op
         calculer()
         updateMeshPositions(moteur, eau, positions)
         updateMeshNormals(moteur, eau, normales)
+        updateMeshColors(moteur, eau, couleurs)
         updateMeshPositions(moteur, parois, positionsParois)
+        if (surcouche) {
+            const derive = [temps * 0.012, temps * 0.007]
+            for (let sommet = 0; sommet < nombreSommets; sommet++) {
+                surcouche.positions[sommet * 3] = positions[sommet * 3]!
+                surcouche.positions[sommet * 3 + 1] = positions[sommet * 3 + 1]! + 0.015
+                surcouche.positions[sommet * 3 + 2] = positions[sommet * 3 + 2]!
+                surcouche.couleurs[sommet * 4 + 3] = Math.min(1, masqueEcume[sommet]! * 1.4) * OPACITE_SURCOUCHE_ECUME
+                surcouche.uvs[sommet * 2] = uvs[sommet * 2]! * REPETITION_ECUME + derive[0]!
+                surcouche.uvs[sommet * 2 + 1] = uvs[sommet * 2 + 1]! * REPETITION_ECUME + derive[1]!
+            }
+            updateMeshPositions(moteur, surcouche.maillage, surcouche.positions)
+            updateMeshNormals(moteur, surcouche.maillage, normales)
+            updateMeshColors(moteur, surcouche.maillage, surcouche.couleurs)
+            updateMeshUvs(moteur, surcouche.maillage, surcouche.uvs)
+        }
     })
 }
 

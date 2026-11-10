@@ -35,7 +35,7 @@ import { CATALOGUE_OUTILS } from '../game/outils.ts'
 import { TAILLE_CASE, caseVersMonde } from './boardGeometry.ts'
 import { CASES_MODELE_BASE } from '../game/carte.ts'
 import { ecranVersCase } from './cellPicking.ts'
-import { hauteurVague } from './vagues.ts'
+import { hauteurVague as hauteurVagueHoule } from './vagues.ts'
 import { creerEau, creerEffets, type Effets } from './effets.ts'
 import { COULEUR_SABLE, creerDecorFondMarin } from './fondMarin.ts'
 import { DUREE_DRONES, INSTANT_REPARATION, NOMBRE_DRONES, poseDrone } from './dronesAnimation.ts'
@@ -204,6 +204,8 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
     if (!('gpu' in navigator)) throw new Error('WebGPU non disponible dans ce navigateur.')
 
     const ambiance = options.carte?.ambiance ?? AMBIANCE_DEFAUT
+    /** Hauteur de la houle de cette carte : tout ce qui flotte (navires, marqueurs, décors) l'utilise. */
+    const hauteurVague = (x: number, z: number, temps: number) => hauteurVagueHoule(x, z, temps, ambiance.agitation)
 
     // Progression du chargement : le moteur, les effets, chaque modèle (décor, navires, outils), la compilation.
     const modelesDecor = options.vue === 'inclinee' ? (options.carte?.decors ?? []).filter((decor) => decor.type === 'modele').length : 0
@@ -282,13 +284,14 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
 
     let effets: Effets | null = null
     if (options.vue === 'inclinee') {
-        creerEau(moteur, scene, {
+        await creerEau(moteur, scene, {
             taille: TAILLE_GRILLE + 4,
             couleur: ambiance.eau,
             niveau: NIVEAU_EAU,
             fond: FOND_MARIN,
             opacite: { surface: OPACITE_SURFACE, parois: OPACITE_PAROIS },
             strates: { nombre: 4, opacite: 0.16, couleurFond: [0.04, 0.3, 0.5] },
+            agitation: ambiance.agitation,
         })
         creerDecorFondMarin(moteur, scene, { taille: TAILLE_GRILLE + 4, fond: FOND_MARIN, tailleGrille: TAILLE_GRILLE })
         effets = await creerEffets(moteur, scene)
