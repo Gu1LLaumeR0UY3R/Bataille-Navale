@@ -67,7 +67,20 @@ const NOMBRE_EXPLOSIONS = 3
 const NOMBRE_ONDES = 4
 /** Un bateau a au plus 5 cases, la flotte 17 : on garde un peu de marge. */
 const NOMBRE_FEUX = TAILLE_GRILLE * 2
-const BOUFFEES_PAR_FEU = 3
+const BOUFFEES_PAR_FEU = 5
+const BRAISES_PAR_FEU = 3
+/** Direction du vent : la fumée s'incline de ce côté en montant. */
+const VENT_FUMEE: [number, number] = [0.55, 0.18]
+const DUREE_FUMEE = 3.4
+/** Les langues d'un feu : couche (ext = rouge-orangé, mid = orange, coeur = jaune clair), taille et cadence. */
+const LANGUES_FEU = [
+    { couche: 'ext', hauteur: 0.62, diametre: 0.32, rayon: 0.07, angle: 0, vitesse: 11 },
+    { couche: 'ext', hauteur: 0.5, diametre: 0.28, rayon: 0.09, angle: 2.1, vitesse: 13 },
+    { couche: 'ext', hauteur: 0.44, diametre: 0.24, rayon: 0.08, angle: 4.2, vitesse: 15 },
+    { couche: 'mid', hauteur: 0.46, diametre: 0.22, rayon: 0.04, angle: 1, vitesse: 14 },
+    { couche: 'mid', hauteur: 0.36, diametre: 0.2, rayon: 0.05, angle: 3.5, vitesse: 17 },
+    { couche: 'coeur', hauteur: 0.3, diametre: 0.13, rayon: 0, angle: 0, vitesse: 19 },
+] as const
 const HAUTEUR_FEU = 0.32
 
 const borner = (valeur: number, minimum = 0, maximum = 1) => Math.min(maximum, Math.max(minimum, valeur))
@@ -528,14 +541,31 @@ interface Bouffee {
     decalage: number
 }
 
+/** Une langue de flamme : un cône qui vacille, s'étire et se penche, avec sa propre cadence. */
+interface LangueFeu {
+    maillage: Mesh
+    hauteur: number
+    rayonDecalage: number
+    angle: number
+    vitesse: number
+    phase: number
+}
+
+interface Braise {
+    maillage: Mesh
+    decalage: number
+}
+
 interface Feu {
     actif: boolean
     cle: string
     x: number
     z: number
     phase: number
-    flammeExterieure: Mesh
-    flammeInterieure: Mesh
+    langues: LangueFeu[]
+    /** Lueur orangée à la base du feu. */
+    lueur: Mesh
+    braises: Braise[]
     bouffees: Bouffee[]
 }
 
@@ -719,28 +749,49 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext, op
     }
 
     // --- Feu et fumée (un emplacement par case en feu) -----------------------------------------
-    const materielFlammeExterieure = await creerMateriau([1, 0.4, 0.05], [1, 0.35, 0.04], 0.88)
-    const materielFlammeInterieure = await creerMateriau([1, 0.9, 0.35], [1, 0.8, 0.25], 0.92)
+    const materielsFlamme = {
+        ext: await creerMateriau([1, 0.3, 0.04], [1, 0.26, 0.03], 0.82),
+        mid: await creerMateriau([1, 0.56, 0.08], [1, 0.5, 0.06], 0.88),
+        coeur: await creerMateriau([1, 0.9, 0.42], [1, 0.86, 0.36], 0.92),
+    }
+    const materielLueur = await creerMateriau([1, 0.5, 0.1], [1, 0.42, 0.07], 0.42)
+    const materielBraise = await creerMateriau([1, 0.72, 0.22], [1, 0.62, 0.14])
     const feux: Feu[] = []
     const feuxParCase = new Map<string, Feu>()
     for (let index = 0; index < NOMBRE_FEUX; index++) {
         const bouffees: Bouffee[] = []
         for (let numero = 0; numero < BOUFFEES_PAR_FEU; numero++) {
-            const materiau = await creerMateriau([0.16, 0.16, 0.18], [0.02, 0.02, 0.025], 0.5, true)
+            const materiau = await creerMateriau([0.13, 0.12, 0.13], [0.03, 0.025, 0.025], 0.5, true)
             bouffees.push({
                 maillage: ajouter(scene, createSphere(moteur, { diameter: 1, segments: 8 }), materiau),
                 materiau,
                 decalage: numero / BOUFFEES_PAR_FEU,
             })
         }
+        const langues: LangueFeu[] = LANGUES_FEU.map((langue, rang) => ({
+            maillage: ajouter(
+                scene,
+                createCylinder(moteur, { height: langue.hauteur, diameterBottom: langue.diametre, diameterTop: 0, tessellation: 8 }),
+                materielsFlamme[langue.couche],
+            ),
+            hauteur: langue.hauteur,
+            rayonDecalage: langue.rayon,
+            angle: langue.angle,
+            vitesse: langue.vitesse,
+            phase: hasard(0, Math.PI * 2) + rang,
+        }))
         feux.push({
             actif: false,
             cle: '',
             x: 0,
             z: 0,
             phase: hasard(0, Math.PI * 2),
-            flammeExterieure: ajouter(scene, createCylinder(moteur, { height: 0.55, diameterBottom: 0.36, diameterTop: 0, tessellation: 10 }), materielFlammeExterieure),
-            flammeInterieure: ajouter(scene, createCylinder(moteur, { height: 0.38, diameterBottom: 0.2, diameterTop: 0, tessellation: 8 }), materielFlammeInterieure),
+            langues,
+            lueur: ajouter(scene, createSphere(moteur, { diameter: 0.55, segments: 8 }), materielLueur),
+            braises: Array.from({ length: BRAISES_PAR_FEU }, (_, numero) => ({
+                maillage: ajouter(scene, createSphere(moteur, { diameter: 0.05, segments: 4 }), materielBraise),
+                decalage: numero / BRAISES_PAR_FEU,
+            })),
             bouffees,
         })
     }
@@ -1027,24 +1078,52 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext, op
 
         for (const feu of feux) {
             if (!feu.actif) continue
-            const scintillement = 1 + 0.22 * Math.sin(temps * 11 + feu.phase) + 0.12 * Math.sin(temps * 17 + feu.phase * 2)
-            const balancement = 0.06 * Math.sin(temps * 7 + feu.phase)
-            feu.flammeExterieure.scaling.set(1 + 0.08 * Math.sin(temps * 13 + feu.phase), scintillement, 1)
-            feu.flammeExterieure.position.set(feu.x + balancement, HAUTEUR_FEU + 0.27 * scintillement, feu.z)
-            const scintillementInterieur = 1 + 0.3 * Math.sin(temps * 15 + feu.phase * 3)
-            feu.flammeInterieure.scaling.set(1, scintillementInterieur, 1)
-            feu.flammeInterieure.position.set(feu.x - balancement * 0.5, HAUTEUR_FEU + 0.19 * scintillementInterieur, feu.z)
-            for (const bouffee of feu.bouffees) {
-                const avancement = (temps / 2.6 + bouffee.decalage + feu.phase) % 1
-                const taille = 0.18 + 0.4 * avancement
-                bouffee.maillage.scaling.set(taille, taille, taille)
-                bouffee.maillage.position.set(
-                    feu.x + 0.22 * avancement + 0.05 * Math.sin(avancement * 9 + feu.phase),
-                    HAUTEUR_FEU + 0.55 + 1.5 * avancement,
-                    feu.z + 0.12 * avancement,
+            // Le feu est sur le pont : il suit la houle comme le navire.
+            const base = HAUTEUR_FEU + hauteurVague(feu.x, feu.z, temps, agitation)
+            // Vent de coup : tout le feu se couche un peu plus par rafales.
+            const rafale = 0.5 + 0.5 * Math.sin(temps * 0.9 + feu.phase)
+            for (const langue of feu.langues) {
+                const t = temps * langue.vitesse + langue.phase
+                // Étirement irrégulier (trois sinusoïdes de cadences non multiples) : la flamme ne boucle jamais.
+                const etirement = 1 + 0.26 * Math.sin(t) + 0.14 * Math.sin(t * 1.73 + 1.3) + 0.08 * Math.sin(t * 2.9)
+                const penchee = 0.12 + 0.1 * rafale
+                const inclinaisonX = 0.12 * Math.sin(t * 0.55) + VENT_FUMEE[1] * penchee
+                const inclinaisonZ = 0.14 * Math.sin(t * 0.42 + 1) - VENT_FUMEE[0] * penchee
+                langue.maillage.scaling.set(1 + 0.1 * Math.sin(t * 1.3), etirement, 1 + 0.1 * Math.cos(t * 1.1))
+                langue.maillage.rotation.x = inclinaisonX
+                langue.maillage.rotation.z = inclinaisonZ
+                langue.maillage.position.set(
+                    feu.x + Math.cos(langue.angle + temps * 0.4) * langue.rayonDecalage - inclinaisonZ * langue.hauteur * etirement * 0.5,
+                    base + (langue.hauteur * etirement) / 2,
+                    feu.z + Math.sin(langue.angle + temps * 0.4) * langue.rayonDecalage + inclinaisonX * langue.hauteur * etirement * 0.5,
                 )
-                // Apparition rapide, disparition lente.
-                bouffee.materiau.alpha = 0.55 * Math.pow(1 - avancement, 1.2) * Math.min(1, avancement * 6)
+            }
+            const pulsation = 1 + 0.18 * Math.sin(temps * 9 + feu.phase) + 0.1 * Math.sin(temps * 14 + feu.phase * 2)
+            feu.lueur.scaling.set(pulsation, 0.2, pulsation)
+            feu.lueur.position.set(feu.x, base + 0.03, feu.z)
+            // Braises : de petites étincelles qui montent en zigzaguant et rétrécissent jusqu'à s'éteindre.
+            for (const [rang, braise] of feu.braises.entries()) {
+                const avancement = (temps / 1.5 + braise.decalage + feu.phase) % 1
+                const taille = Math.max(0.001, 1 - avancement) * (0.7 + 0.3 * Math.sin(temps * 30 + rang))
+                braise.maillage.scaling.set(taille, taille, taille)
+                braise.maillage.position.set(
+                    feu.x + 0.22 * Math.sin(avancement * 7 + rang * 2.1 + feu.phase) + VENT_FUMEE[0] * 0.5 * avancement,
+                    base + 0.25 + 1.4 * avancement,
+                    feu.z + 0.18 * Math.cos(avancement * 6 + rang * 1.7) + VENT_FUMEE[1] * 0.5 * avancement,
+                )
+            }
+            // Fumée : des volutes sombres qui montent, grossissent, se couchent dans le vent et se dissipent.
+            for (const bouffee of feu.bouffees) {
+                const avancement = (temps / DUREE_FUMEE + bouffee.decalage + feu.phase) % 1
+                const taille = 0.2 + 0.75 * Math.pow(avancement, 0.8)
+                bouffee.maillage.scaling.set(taille, taille * 0.9, taille)
+                bouffee.maillage.position.set(
+                    feu.x + VENT_FUMEE[0] * avancement * avancement * 1.8 + 0.07 * Math.sin(avancement * 8 + feu.phase),
+                    base + 0.5 + 2.1 * avancement,
+                    feu.z + VENT_FUMEE[1] * avancement * avancement * 1.8 + 0.05 * Math.cos(avancement * 7 + feu.phase),
+                )
+                // Naissance rapide dans la lueur du feu, dissipation lente.
+                bouffee.materiau.alpha = 0.5 * Math.pow(1 - avancement, 1.3) * Math.min(1, avancement * 5)
             }
         }
     }
@@ -1078,14 +1157,16 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext, op
                 libre.x = x
                 libre.z = z
                 feuxParCase.set(cle, libre)
-                montrer(libre.flammeExterieure, true)
-                montrer(libre.flammeInterieure, true)
+                libre.langues.forEach((langue) => montrer(langue.maillage, true))
+                montrer(libre.lueur, true)
+                libre.braises.forEach((braise) => montrer(braise.maillage, true))
                 libre.bouffees.forEach((bouffee) => montrer(bouffee.maillage, true))
             } else if (existant) {
                 existant.actif = false
                 feuxParCase.delete(cle)
-                montrer(existant.flammeExterieure, false)
-                montrer(existant.flammeInterieure, false)
+                existant.langues.forEach((langue) => montrer(langue.maillage, false))
+                montrer(existant.lueur, false)
+                existant.braises.forEach((braise) => montrer(braise.maillage, false))
                 existant.bouffees.forEach((bouffee) => montrer(bouffee.maillage, false))
             }
         },
