@@ -3,7 +3,7 @@
 // Ce composant ne manipule jamais un objet 3D : il traduit des props en appels de méthodes,
 // et les événements de la scène 3D en événements Vue.
 import { onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import { creerSceneGrille, type OutilVisuel, type ProgresChargement, type SceneGrille } from '../engine/boardScene.ts'
+import { creerSceneGrille, type OutilVisuel, type ProgresChargement, type SceneGrille, type VueCamera } from '../engine/boardScene.ts'
 import type { CoordCase, EtatCase, Couleur, Bateau } from '../game/types.ts'
 import type { Carte } from '../maps/types.ts'
 
@@ -11,6 +11,8 @@ const proprietes = withDefaults(
     defineProps<{
         cases: EtatCase[][]
         vue?: 'inclinee' | 'dessus'
+        /** Position de caméra enregistrée (vue inclinée seulement). */
+        vueCamera?: VueCamera
         interactif?: boolean
         apercu?: { cases: CoordCase[]; valide: boolean; balise?: boolean } | null
         bateaux?: Bateau[]
@@ -24,7 +26,7 @@ const proprietes = withDefaults(
         couleurFondMarin?: Couleur
         carte?: Carte | null
     }>(),
-    { vue: 'inclinee', interactif: false, apercu: null, bateaux: () => [], outils: () => [], boucliers: () => [], reparation: null, impactBouclier: null, couleurFondMarin: () => [1.0, 0.2, 0.2], carte: null },
+    { vue: 'inclinee', vueCamera: 'avant', interactif: false, apercu: null, bateaux: () => [], outils: () => [], boucliers: () => [], reparation: null, impactBouclier: null, couleurFondMarin: () => [1.0, 0.2, 0.2], carte: null },
 )
 
 const emettre = defineEmits<{
@@ -36,6 +38,8 @@ const emettre = defineEmits<{
     'reparation-finie': [id: number]
     /** Avancement du chargement de la scène (moteur, effets, modèles, compilation). */
     progres: [progres: ProgresChargement]
+    /** La caméra a bougé (alpha = tour, beta = hauteur) : le cube de vue la suit. */
+    camera: [alpha: number, beta: number]
     /** La scène est entièrement chargée et affichée. */
     pret: []
     /** La scène n'a pas pu être créée (WebGPU absent, modèle illisible…). */
@@ -62,6 +66,7 @@ onMounted(async () => {
             couleurFondMarin: proprietes.couleurFondMarin,
             carte: proprietes.carte,
             surProgres: (progres) => emettre('progres', progres),
+            surCamera: (alpha, beta) => emettre('camera', alpha, beta),
         })
 
         if (estDemonte) {
@@ -86,6 +91,7 @@ onMounted(async () => {
         sceneCreee.definirOutils(proprietes.outils)
         sceneCreee.definirBoucliers(proprietes.boucliers)
         appliquerApercu()
+        if (proprietes.vueCamera && proprietes.vueCamera !== 'avant') sceneCreee.definirVueCamera(proprietes.vueCamera, true)
         emettre('pret')
     } catch (erreurCapturee) {
         erreur.value = erreurCapturee instanceof Error ? erreurCapturee.message : String(erreurCapturee)
@@ -93,6 +99,9 @@ onMounted(async () => {
     }
 })
 
+watch(() => proprietes.vueCamera, (vue) => {
+    if (vue) sceneGrille.value?.definirVueCamera(vue)
+})
 watch(() => proprietes.cases, (cases) => sceneGrille.value?.definirCases(cases), { deep: true })
 watch(() => proprietes.bateaux, (bateaux) => sceneGrille.value?.definirBateaux(bateaux), { deep: true })
 watch(() => proprietes.outils, (outils) => sceneGrille.value?.definirOutils(outils), { deep: true })

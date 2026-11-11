@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // Démo LOCALE : l'adversaire est simulé dans le navigateur.
 // Quand le serveur PHP existera, les trois endroits marqués « SERVEUR » seront remplacés par des appels réseau.
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import Grille3D from './components/BoardView3D.vue'
+import CubeVue from './components/CubeVue.vue'
 import PlacementBateaux from './components/ShipPlacement.vue'
 import EcranAccueil from './components/EcranAccueil.vue'
 import EcranOptions from './components/EcranOptions.vue'
@@ -13,7 +14,7 @@ import OutilEnMain from './components/OutilEnMain.vue'
 import PoissonsVolants from './components/PoissonsVolants.vue'
 import EcranChargement from './components/EcranChargement.vue'
 import EcranFin from './components/EcranFin.vue'
-import type { OutilVisuel, ProgresChargement } from './engine/boardScene.ts'
+import type { OutilVisuel, ProgresChargement, VueCamera } from './engine/boardScene.ts'
 import { calculerStats, type StatsPartie } from './game/stats.ts'
 import type { Carte } from './maps/types.ts'
 import { bateauSurCase, casesBateau, tousCoules, grilleAvecTirs, placerFlotteAleatoirement, resoudreTir } from './game/rules.ts'
@@ -89,6 +90,50 @@ let debutPartie = Date.now()
 const statsFin = ref<StatsPartie | null>(null)
 const ecranFinVisible = ref(false)
 let ia: IA | null = null
+// --- Caméra : une seule grille en grand à la fois, un cube de vue pour choisir le côté -------------------
+type GrilleAffichee = 'ma' | 'ennemie'
+const CLE_VUE_CAMERA = 'bataille-navale:vue-camera'
+const VUES_VALIDES: VueCamera[] = ['avant', 'dessus', 'droite', 'gauche', 'arriere']
+const lireVueCamera = (): VueCamera => {
+    try {
+        const memorisee = localStorage.getItem(CLE_VUE_CAMERA)
+        if (VUES_VALIDES.includes(memorisee as VueCamera)) return memorisee as VueCamera
+    } catch { /* stockage indisponible : on garde la valeur par défaut */ }
+    return 'avant'
+}
+/** Vue demandée par le cube : appliquée aux deux grilles, pour retrouver le même angle à chaque bascule. */
+const vueCamera = ref<VueCamera>(lireVueCamera())
+function choisirVueCamera(vue: VueCamera) {
+    vueCamera.value = vue
+    try { localStorage.setItem(CLE_VUE_CAMERA, vue) } catch { /* sans importance */ }
+}
+/** Angle de la caméra de la grille affichée : le cube s'oriente comme elle. */
+const angleCamera = reactive({ alpha: -Math.PI / 2, beta: 1 })
+const angleParGrille: Record<GrilleAffichee, { alpha: number, beta: number }> = {
+    ma: { alpha: -Math.PI / 2, beta: 1 },
+    ennemie: { alpha: -Math.PI / 2, beta: 1 },
+}
+function surCameraGrille(grille: GrilleAffichee, alpha: number, beta: number) {
+    angleParGrille[grille] = { alpha, beta }
+    if (grille === grilleAffichee.value) Object.assign(angleCamera, { alpha, beta })
+}
+
+/** Pendant votre tour, on voit la zone ennemie en grand (c'est vous qui tirez) ; pendant le sien, votre flotte. */
+const grilleAffichee = ref<GrilleAffichee>('ma')
+/** Délais avant de passer d'une grille à l'autre à un changement de tour : on laisse le tir (et son impact) se jouer. */
+const DELAI_VERS_MA = 1900
+const DELAI_VERS_ENNEMIE = 1100
+let minuterieBascule: ReturnType<typeof setTimeout> | undefined
+function basculerVers(grille: GrilleAffichee, delai: number) {
+    clearTimeout(minuterieBascule)
+    if (grille === grilleAffichee.value) return
+    const appliquer = () => {
+        grilleAffichee.value = grille
+        Object.assign(angleCamera, angleParGrille[grille])
+    }
+    if (delai <= 0) appliquer()
+    else minuterieBascule = setTimeout(appliquer, delai)
+}
 const urlPoisson = `${import.meta.env.BASE_URL}images/poisson.png`
 
 const maGrille = computed(() => grilleAvecTirs(mesBateaux.value, tirsAdversesChezMoi.value, true))
@@ -132,6 +177,20 @@ const animationPiloteeAMain = () => !!(globalThis as { __gelerAnimation?: boolea
 
 const outilEnMain = computed(() => CATALOGUE_OUTILS.find((outil) => outil.identifiant === outilSelectionne.value) ?? null)
 const cibleSurMaGrille = computed(() => outilSelectionne.value === 'bouee' || outilSelectionne.value === 'drone')
+/** Les drones de l'adversaire réparent sur SA grille : on la montre le temps de la réparation. */
+const dronesAdversesEnVol = ref(false)
+/** Quelle grille doit être affichée, et avec quel délai quand c'est un changement de tour. */
+watch([aMoiDeJouer, cibleSurMaGrille, dronesAdversesEnVol, etape], ([moi, defensif, dronesAdverses, etapeActuelle], ancien) => {
+    if (etapeActuelle !== 'en_cours') {
+        if (ancien && ancien[3] !== etapeActuelle) basculerVers('ma', 0)
+        return
+    }
+    const voulue: GrilleAffichee = dronesAdverses || (moi && !defensif) ? 'ennemie' : 'ma'
+    const depart = !ancien || ancien[3] !== etapeActuelle
+    const changementDOutil = !!ancien && ancien[1] !== defensif
+    const delai = depart || changementDOutil || dronesAdverses ? 0 : voulue === 'ma' ? DELAI_VERS_MA : DELAI_VERS_ENNEMIE
+    basculerVers(voulue, depart ? 600 : delai)
+})
 const consigneAdversaire = computed(() => {
     if (etape.value !== 'en_cours') return 'Fin de la partie'
     if (!aMoiDeJouer.value) return reflexionAdverse.value ? 'L’adversaire réfléchit…' : 'L’adversaire joue…'
@@ -536,6 +595,7 @@ function droneAdverse(caseGrille: CoordCase) {
     adverse.naviresRepares.push(diagnostic.bateau.identifiant)
     etapeReparationAdverse = 'en-vol'
     casesEnReparationAdverse = diagnostic.casesReparees
+    dronesAdversesEnVol.value = true
     reparationAdverse.value = { id: ++compteurAnimation, caseGrille, cases: diagnostic.casesReparees }
     message.value = 'L’adversaire envoie ses drones réparer l’un de ses navires…'
     sonDrones()
@@ -557,6 +617,7 @@ function appliquerReparationAdverse() {
 function terminerSequenceDronesAdverse() {
     appliquerReparationAdverse()
     if (etapeReparationAdverse !== 'faite') return
+    dronesAdversesEnVol.value = false
     etapeReparationAdverse = 'finie'
     clearTimeout(minuterieReparation)
     clearTimeout(minuterieAdverse)
@@ -693,24 +754,25 @@ const libelleEtape = computed(() => ({
                     <span aria-hidden="true">◎</span> {{ derniereRecherche }}
                 </p>
 
-                <section class="grilles" :class="{ 'outil-actif': !!outilSelectionne }">
-                    <figure ref="elementMaFlotte" class="carte-grille"
-                        :class="{ 'cible-active': etape === 'en_cours' && aMoiDeJouer && cibleSurMaGrille }">
+                <section class="grilles">
+                    <CubeVue :alpha="angleCamera.alpha" :beta="angleCamera.beta" @choisir="choisirVueCamera" />
+                    <figure ref="elementMaFlotte" class="carte-grille" :class="grilleAffichee === 'ma' ? 'visible' : 'cachee'"
+                        :aria-hidden="grilleAffichee !== 'ma'">
                         <figcaption><span class="etiquette-grille">VOTRE FLOTTE</span><strong>Le port d’attache</strong><small>{{ mesBateaux.length }} navires en mer</small></figcaption>
-                        <Grille3D :cases="maGrille" :bateaux="mesBateaux" :outils="outilsMaGrille" :boucliers="joueur.boucliers"
+                        <Grille3D :cases="maGrille" :vue-camera="vueCamera" :bateaux="mesBateaux" :outils="outilsMaGrille" :boucliers="joueur.boucliers"
                             :reparation="reparationEnCours" :impact-bouclier="impactBouclier" :apercu="apercuMaGrille"
                             :interactif="etape === 'en_cours' && aMoiDeJouer && cibleSurMaGrille"
-                            @clic-case="utiliserOutilSurCase" @survol-case="survolMaGrille = $event"
+                            @clic-case="utiliserOutilSurCase" @survol-case="survolMaGrille = $event" @camera="(a, b) => surCameraGrille('ma', a, b)"
                             @reparation-faite="appliquerReparation" @reparation-finie="terminerSequenceDrones"
                             @progres="surProgres('ma', $event)" @pret="surScenePrete('ma')" @echec="surScenePrete('ma')" :carte="carte" />
                     </figure>
-                    <figure class="carte-grille"
-                        :class="{ 'cible-active': etape === 'en_cours' && aMoiDeJouer && !cibleSurMaGrille }">
+                    <figure class="carte-grille" :class="grilleAffichee === 'ennemie' ? 'visible' : 'cachee'"
+                        :aria-hidden="grilleAffichee !== 'ennemie'">
                         <figcaption><span class="etiquette-grille">ZONE ENNEMIE</span><strong>Le large inconnu</strong><small>{{ consigneAdversaire }}</small></figcaption>
-                        <Grille3D :cases="grilleAdverse" :bateaux="bateauxAdversesCoules" :outils="outilsGrilleAdverse"
+                        <Grille3D :cases="grilleAdverse" :vue-camera="vueCamera" :bateaux="bateauxAdversesCoules" :outils="outilsGrilleAdverse"
                             :boucliers="adverse.boucliers" :reparation="reparationAdverse" :impact-bouclier="impactBouclierAdverse"
-                            :apercu="apercuSonar" :interactif="etape === 'en_cours' && aMoiDeJouer"
-                            @clic-case="tirer" @survol-case="survolEnnemi = $event"
+                            :apercu="apercuSonar" :interactif="etape === 'en_cours' && aMoiDeJouer && grilleAffichee === 'ennemie'"
+                            @clic-case="tirer" @survol-case="survolEnnemi = $event" @camera="(a, b) => surCameraGrille('ennemie', a, b)"
                             @reparation-faite="appliquerReparationAdverse" @reparation-finie="terminerSequenceDronesAdverse"
                             @progres="surProgres('ennemie', $event)" @pret="surScenePrete('ennemie')" @echec="surScenePrete('ennemie')" :carte="carte" />
                     </figure>
@@ -1075,77 +1137,87 @@ const libelleEtape = computed(() => ({
     from { opacity: 0; transform: translateY(-8px); }
 }
 
+/* Une seule grille en grand, à la fois : l'autre attend derrière (elle continue d'être animée). */
 .grilles {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: clamp(1rem, 2.5vw, 2rem);
-}
-.carte-grille {
     position: relative;
-    min-width: 0;
-    margin: 0;
-    padding: 0.7rem 0.7rem 0.8rem;
+    height: clamp(30rem, calc(100vh - 12.5rem), 56rem);
+    overflow: hidden;
     border: 3px solid var(--cuivre);
     border-radius: 22px;
-    background: var(--grain), linear-gradient(180deg, #f6ebcf, #e9d6aa);
-    box-shadow: 0 18px 44px rgb(3 24 42 / 34%), inset 0 2px 0 rgb(255 255 255 / 55%);
-    color: var(--encre);
-    transition: opacity 280ms ease, filter 280ms ease, transform 280ms ease, box-shadow 280ms ease;
+    background: #0b3a5a;
+    box-shadow: 0 18px 44px rgb(3 24 42 / 34%);
+    isolation: isolate;
 }
-/* Rivets aux angles de la plaque. */
-.carte-grille::before,
-.carte-grille::after {
+.carte-grille {
     position: absolute;
-    top: 9px;
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
-    background: radial-gradient(circle at 35% 30%, #fff0c4, #b88a3c 60%, #6d4a17);
-    box-shadow: 0 1px 2px rgb(60 38 12 / 50%);
-    content: '';
+    inset: 0;
+    min-width: 0;
+    margin: 0;
+    color: var(--craie);
+    will-change: transform, opacity;
 }
-.carte-grille::before { left: 11px; }
-.carte-grille::after { right: 11px; }
-/* La grille où l'outil en main va servir ressort ; l'autre s'estompe. */
-.grilles.outil-actif .carte-grille:not(.cible-active) {
-    opacity: 0.55;
-    filter: saturate(0.6);
+.carte-grille.visible {
+    z-index: 2;
+    animation: arrivee-grille 950ms cubic-bezier(0.22, 0.8, 0.25, 1) 220ms both;
 }
-.cible-active {
-    box-shadow: 0 0 0 4px rgb(255 198 90 / 55%), 0 22px 54px rgb(3 24 42 / 42%), inset 0 2px 0 rgb(255 255 255 / 55%);
+.carte-grille.cachee {
+    z-index: 1;
+    pointer-events: none;
+    animation: depart-grille 620ms cubic-bezier(0.5, 0, 0.9, 0.5) both;
 }
-.grilles.outil-actif .cible-active {
-    transform: translateY(-4px);
-    animation: cible-halo 1.5s ease-in-out infinite;
+/* Traversée de la mer : la caméra file vers l'horizon (la grille quittée s'éloigne en grossissant et se dilue),
+   puis la nouvelle grille se rapproche depuis le large. */
+@keyframes depart-grille {
+    to { opacity: 0; transform: scale(1.35) translateY(-5%); filter: blur(8px) brightness(1.25); visibility: hidden; }
 }
-@keyframes cible-halo {
-    50% { box-shadow: 0 0 0 9px rgb(255 198 90 / 22%), 0 22px 54px rgb(3 24 42 / 42%), inset 0 2px 0 rgb(255 255 255 / 55%); }
+@keyframes arrivee-grille {
+    from { opacity: 0; transform: scale(0.72) translateY(7%); filter: blur(8px) brightness(1.25); }
+    to { opacity: 1; transform: none; filter: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .carte-grille.visible { animation: fondu-grille 300ms ease both; }
+    .carte-grille.cachee { animation: none; opacity: 0; visibility: hidden; }
+    @keyframes fondu-grille { from { opacity: 0; } }
+}
+/* La toile remplit toute la zone. */
+.carte-grille :deep(.grille) {
+    height: 100%;
+}
+.carte-grille :deep(.toile-grille) {
+    height: 100%;
+    aspect-ratio: auto;
+    border-radius: 0;
 }
 figcaption {
+    position: absolute;
+    top: 0.9rem;
+    left: 1rem;
+    z-index: 5;
     display: grid;
     gap: 0.1rem;
-    margin: 0 0.5rem 0.6rem;
-    padding: 0.2rem 1rem 0;
+    max-width: min(24rem, calc(100% - 9rem));
+    padding: 0.6rem 1rem 0.65rem;
+    border: 1px solid rgb(201 132 60 / 70%);
+    border-radius: 14px;
+    background: rgb(7 32 52 / 62%);
+    backdrop-filter: blur(6px);
+    pointer-events: none;
 }
 figcaption strong {
     font-family: var(--police-titres);
-    font-size: 1.3rem;
+    font-size: 1.2rem;
     font-weight: 700;
 }
 figcaption small {
-    color: var(--encre-douce);
+    color: rgb(246 234 208 / 78%);
     font-size: 0.82rem;
     font-style: italic;
 }
 .etiquette-grille {
-    color: var(--cuivre-fonce);
+    color: #f0b46c;
     font-size: 0.62rem;
     font-weight: 800;
     letter-spacing: 0.18em;
-}
-.carte-grille :deep(.grille3d),
-.carte-grille :deep(canvas) {
-    border-radius: 14px;
 }
 .fin {
     display: flex;
@@ -1155,9 +1227,7 @@ figcaption small {
     margin-top: 1.5rem;
 }
 @media (max-width: 760px) {
-    .grilles { grid-template-columns: 1fr; }
-    /* Mobile : la zone ennemie, où l'on tire, passe avant sa propre flotte. */
-    .grilles .carte-grille:nth-child(2) { order: -1; }
+    .grilles { height: clamp(26rem, 72vh, 40rem); }
     .poste-commande {
         grid-template-columns: 1fr auto;
     }

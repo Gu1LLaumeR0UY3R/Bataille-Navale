@@ -5,6 +5,7 @@ import {
     addToScene,
     createArcRotateCamera,
     attachControl,
+    interpolateArcRotateCamera,
     createBox,
     createCylinder,
     createDirectionalLight,
@@ -24,6 +25,7 @@ import {
     setSubtreeVisible,
     startEngine,
     stopEngine,
+    type ArcRotateCamera,
     type Camera,
     type EngineContext,
     type Mesh,
@@ -97,6 +99,8 @@ export interface OptionsSceneGrille {
     carte?: Carte | null
     /** Appelé à chaque étape du chargement (moteur, effets, décor, navires, outils, compilation). */
     surProgres?: (progres: ProgresChargement) => void
+    /** Appelé quand la caméra orbitale bouge (alpha = tour, beta = hauteur) : sert au cube de vue. */
+    surCamera?: (alpha: number, beta: number) => void
 }
 
 export interface ProgresChargement {
@@ -116,7 +120,21 @@ export interface OutilVisuel {
 }
 
 // "API" de SceneGrille : ce que l'on peut appeler de l'extérieur
+/** Positions de caméra enregistrées : le joueur passe de l'une à l'autre d'un clic. */
+export type VueCamera = 'avant' | 'dessus' | 'droite' | 'gauche' | 'arriere'
+
+/** alpha = tour autour de la grille, beta = hauteur (0 = pile au-dessus, π/2 = à l'horizontale), radius = distance. */
+export const VUES_CAMERA: Record<VueCamera, { alpha: number, beta: number, radius: number }> = {
+    avant: { alpha: -Math.PI / 2, beta: 1.0, radius: 16 },
+    dessus: { alpha: -Math.PI / 2, beta: 0.1, radius: 17 },
+    droite: { alpha: 0, beta: 1.25, radius: 15 },
+    gauche: { alpha: Math.PI, beta: 1.25, radius: 15 },
+    arriere: { alpha: Math.PI / 2, beta: 1.0, radius: 16 },
+}
+
 export interface SceneGrille {
+    /** Place la caméra sur une des positions enregistrées (en glissant, sauf si `immediat`). */
+    definirVueCamera(vue: VueCamera, immediat?: boolean): void
     /** Met à jour toutes les cases d'un coup. */
     definirCases(cases: readonly (readonly EtatCase[])[]): void
     definirEtatCase(colonne: number, ligne: number, etat: EtatCase): void
@@ -227,6 +245,7 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
 
     // 2. Caméra FIXE : on n'appelle pas attachControl, le joueur ne peut pas la bouger.
     let camera: Camera
+    let cameraOrbitale: ArcRotateCamera | null = null
     if (options.vue === 'dessus') {
         const cameraVueDessus = createArcRotateCamera(-Math.PI / 2, 0.0001, 20, { x: 0, y: 0, z: 0 })
         enableOrthographicCamera(cameraVueDessus, { halfHeight: (TAILLE_GRILLE * TAILLE_CASE) / 2 + 0.5 })
@@ -234,6 +253,7 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
     } else {
         const cameraInclinee = createArcRotateCamera(-Math.PI / 2, 1.0, 16, { x: 0, y: 0, z: 0 })
         camera = cameraInclinee
+        cameraOrbitale = cameraInclinee
         attachControl(cameraInclinee, toile, scene)
     }
     scene.camera = camera
@@ -686,6 +706,19 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
     await startEngine(moteur)
     avancer('Dernières vérifications')
 
+    // Le cube de vue suit la caméra : on signale chaque changement d'angle.
+    if (cameraOrbitale && options.surCamera) {
+        const suivie = cameraOrbitale
+        let dernierAlpha = Number.NaN
+        let dernierBeta = Number.NaN
+        onBeforeRender(scene, () => {
+            if (Math.abs(suivie.alpha - dernierAlpha) < 0.0004 && Math.abs(suivie.beta - dernierBeta) < 0.0004) return
+            dernierAlpha = suivie.alpha
+            dernierBeta = suivie.beta
+            options.surCamera?.(dernierAlpha, dernierBeta)
+        })
+    }
+
     // Animation des vagues : une fois par image, on recalcule les hauteurs depuis la position de repos
     // (jamais depuis la position précédente : les décalages ne s'accumulent donc pas).
     if (AVEC_VAGUES) {
@@ -865,8 +898,33 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
     }
 
     let estLiberee = false
+    let transitionCamera: AbortController | null = null
     return {
         definirEtatCase,
+        definirVueCamera(vue, immediat = false) {
+            if (!cameraOrbitale) return
+            const but = VUES_CAMERA[vue]
+            transitionCamera?.abort()
+            // Tour le plus court : on ramène l'angle visé dans ±π de l'angle actuel.
+            const tour = Math.PI * 2
+            const alphaCible = but.alpha + tour * Math.round((cameraOrbitale.alpha - but.alpha) / tour)
+            if (immediat) {
+                cameraOrbitale.alpha = alphaCible
+                cameraOrbitale.beta = but.beta
+                cameraOrbitale.radius = but.radius
+                cameraOrbitale.target = { x: 0, y: 0, z: 0 }
+                return
+            }
+            transitionCamera = new AbortController()
+            // Glissement doux vers la nouvelle position ; la caméra reste manipulable pendant et après.
+            void interpolateArcRotateCamera(
+                cameraOrbitale,
+                scene,
+                { alpha: alphaCible, beta: but.beta, radius: but.radius, target: { x: 0, y: 0, z: 0 } },
+                transitionCamera.signal,
+                { interpolationFactor: 0.35 },
+            ).catch(() => undefined)
+        },
         definirCases(cases) {
             for (let ligne = 0; ligne < TAILLE_GRILLE; ligne++) {
                 for (let colonne = 0; colonne < TAILLE_GRILLE; colonne++) {
