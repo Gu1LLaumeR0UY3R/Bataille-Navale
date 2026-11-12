@@ -35,3 +35,15 @@ Une carte invalide est ignorée, avec un avertissement dans la console du naviga
 - Décors : `ile`, `rocher`, `bouee` (formes intégrées) ou `modele` (fichier `.glb` du dossier de la carte).
   La grille occupe de -5 à 5 en `x` et `z` ; la mer s'étend jusqu'à ±7. Placer les décors entre 5,5 et 6,5 pour ne pas gêner le jeu (valeurs limitées à ±6,5).
 - Les décors flottent avec les vagues et n'ont aucun effet sur les règles.
+
+## Évènements (facultatif)
+
+Une carte peut déclencher un évènement pendant la partie :
+
+```json
+"evenements": { "kraken": { "debut": 10, "intervalle": 4, "tentacules": 4 } }
+```
+
+- `debut` : numéro du tour où le Kraken frappe pour la première fois (le tour d'avant, la mer bouillonne).
+- `intervalle` : nombre de tours entre deux attaques.
+- `tentacules` : tentacules par grille et par attaque (cases frappées au hasard sur chaque flotte, 1 à 6).

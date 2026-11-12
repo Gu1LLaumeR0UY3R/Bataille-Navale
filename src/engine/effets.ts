@@ -41,6 +41,8 @@ export type ResultatImpact = 'rate' | 'touche' | 'coule'
 export interface Effets {
     /** Lance un boulet vers la case. `surImpact` est appelé quand il touche (l'état définitif de la case s'affiche alors). */
     tirer(colonne: number, ligne: number, resultat: ResultatImpact, surImpact: () => void): void
+    /** Un tentacule du Kraken jaillit de l'eau et s'abat sur la case, `retard` secondes plus tard. Même contrat que `tirer`. */
+    tirerKraken(colonne: number, ligne: number, resultat: ResultatImpact, retard: number, surImpact: () => void): void
     definirFeu(colonne: number, ligne: number, actif: boolean): void
     definirEcume(colonne: number, ligne: number, actif: boolean): void
     definirTraceBrulure(colonne: number, ligne: number, actif: boolean): void
@@ -48,11 +50,38 @@ export interface Effets {
     planifier(delai: number, action: () => void): void
     /** Durée totale entre le départ du boulet et son impact, en secondes. */
     readonly dureeVol: number
+    /** Durée du vol du boulet qui coule un navire (la caméra épique le rallonge pour qu'on le suive). */
+    definirDureeVolCoulant(secondes: number): void
+    /** Suit le boulet qui coule un navire : `rappel` reçoit sa position à chaque image, puis `null` quand il a touché. */
+    ecouterBoulet(rappel: ((suivi: SuiviBoulet | null) => void) | null): void
+}
+
+/** Position du boulet en vol, avec sa direction horizontale (vecteur unitaire) et sa progression de 0 à 1. */
+export interface SuiviBoulet {
+    x: number
+    y: number
+    z: number
+    directionX: number
+    directionZ: number
+    avancement: number
+    /** Point d'impact. */
+    cibleX: number
+    cibleZ: number
 }
 
 type Vec3 = [number, number, number]
 
 const DUREE_VOL = 0.6
+
+// Tentacule du Kraken : une chaîne de sphères qui suit une courbe (surgit, s'élève, plonge sur la cible, s'attarde, se retire).
+const SEGMENTS_TENTACULE = 22
+const TENTACULES_MAX = 6
+const DUREE_MONTEE_TENTACULE = 0.95
+const DUREE_PIQUE_TENTACULE = 0.28
+const DUREE_REPOS_TENTACULE = 1
+const DUREE_RETRAIT_TENTACULE = 0.8
+/** Avancement de la tête quand elle atteint le sommet de l'arc : ensuite elle plonge. */
+const AVANCEMENT_SOMMET = 0.55
 const DUREE_EXPLOSION = 1
 const DUREE_ONDE = 1.3
 /** Durée totale d'une éclaboussure : gerbe, gouttes puis écume qui se défait. */
@@ -475,6 +504,8 @@ interface Boulet {
     cible: Vec3
     resultat: ResultatImpact
     surImpact: () => void
+    /** Durée de vol de ce boulet-ci. */
+    duree: number
 }
 
 interface Explosion {
@@ -587,6 +618,8 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext, op
     const agitation = options.agitation ?? AGITATION_DEFAUT
     const niveauEau = options.niveauEau ?? 0
     const impactsEau = impactsDeLaScene(scene)
+    let suiviBoulet: ((suivi: SuiviBoulet | null) => void) | null = null
+    let dureeVolCoulant = DUREE_VOL
     enableStandardVertexColors()
 
     // --- Écume d'impact : la texture PNG, posée sur l'eau -------------------------------------
@@ -684,6 +717,7 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext, op
         cible: [0, 0, 0],
         resultat: 'rate',
         surImpact: () => {},
+        duree: DUREE_VOL,
     }))
 
     // --- Explosions ----------------------------------------------------------------------------
@@ -922,6 +956,113 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext, op
         }
     }
 
+    // --- Tentacules du Kraken ------------------------------------------------------------------
+    interface Tentacule {
+        segments: Mesh[]
+        actif: boolean
+        /** Secondes écoulées depuis le départ (négatif tant qu'il attend son tour). */
+        age: number
+        base: [number, number]
+        cible: [number, number]
+        resultat: ResultatImpact
+        surImpact: () => void
+        impactFait: boolean
+        surgi: boolean
+        phase: number
+    }
+    const materielTentacule = await creerMateriau([0.34, 0.17, 0.4], [0.1, 0.04, 0.13])
+    const tentacules: Tentacule[] = Array.from({ length: TENTACULES_MAX }, () => ({
+        segments: Array.from({ length: SEGMENTS_TENTACULE }, () => ajouter(scene, createSphere(moteur, { diameter: 1, segments: 7 }), materielTentacule)),
+        actif: false,
+        age: 0,
+        base: [0, 0] as [number, number],
+        cible: [0, 0] as [number, number],
+        resultat: 'rate' as ResultatImpact,
+        surImpact: () => {},
+        impactFait: false,
+        surgi: false,
+        phase: 0,
+    }))
+    /** Point de la courbe (Bézier cubique) : part sous l'eau près de la cible, monte haut, plonge sur la cible. */
+    const pointTentacule = (tentacule: Tentacule, u: number, sortie: Vec3) => {
+        const [bx, bz] = tentacule.base
+        const [cx, cz] = tentacule.cible
+        const dx = cx - bx
+        const dz = cz - bz
+        const v = 1 - u
+        // x/z : de la base à la cible, avec un léger bombement ; y : points de contrôle très hauts (l'arc).
+        const px = [bx, bx + dx * 0.25, bx + dx * 0.85, cx]
+        const pz = [bz, bz + dz * 0.25, bz + dz * 0.85, cz]
+        const py = [-1.1, 5.2, 6.0, 0.1]
+        const a = v * v * v
+        const b = 3 * v * v * u
+        const c = 3 * v * u * u
+        const d = u * u * u
+        sortie[0] = a * px[0]! + b * px[1]! + c * px[2]! + d * px[3]!
+        sortie[1] = a * py[0]! + b * py[1]! + c * py[2]! + d * py[3]!
+        sortie[2] = a * pz[0]! + b * pz[1]! + c * pz[2]! + d * pz[3]!
+    }
+    const pointTemporaire: Vec3 = [0, 0, 0]
+    const avancerTentacules = (dt: number) => {
+        for (const tentacule of tentacules) {
+            if (!tentacule.actif) continue
+            tentacule.age += dt
+            const age = tentacule.age
+            if (age < 0) continue
+            if (!tentacule.surgi) {
+                tentacule.surgi = true
+                tentacule.segments.forEach((segment) => montrer(segment, true))
+                lancerOnde(tentacule.base[0], tentacule.base[1]) // la gerbe où il jaillit
+            }
+            const finMontee = DUREE_MONTEE_TENTACULE
+            const finPique = finMontee + DUREE_PIQUE_TENTACULE
+            const finRepos = finPique + DUREE_REPOS_TENTACULE
+            const finRetrait = finRepos + DUREE_RETRAIT_TENTACULE
+            if (age >= finRetrait) {
+                tentacule.actif = false
+                tentacule.segments.forEach((segment) => montrer(segment, false))
+                continue
+            }
+            // Avancement de la tête le long de la courbe.
+            let tete: number
+            if (age < finMontee) tete = AVANCEMENT_SOMMET * (1 - Math.pow(1 - age / finMontee, 2.2))
+            else if (age < finPique) tete = AVANCEMENT_SOMMET + (1 - AVANCEMENT_SOMMET) * Math.pow((age - finMontee) / DUREE_PIQUE_TENTACULE, 2.4)
+            else if (age < finRepos) tete = 1
+            else tete = 1 - Math.pow((age - finRepos) / DUREE_RETRAIT_TENTACULE, 1.8)
+            if (age >= finPique && !tentacule.impactFait) {
+                tentacule.impactFait = true
+                const [x, z] = tentacule.cible
+                if (tentacule.resultat === 'rate') {
+                    lancerOnde(x, z)
+                    taches.push({ reste: 0.4, action: tentacule.surImpact })
+                } else {
+                    lancerExplosion(x, z, tentacule.resultat === 'coule' ? 1.5 : 1)
+                    taches.push({ reste: 0.12, action: tentacule.surImpact })
+                }
+            }
+            // Il se tord de plus en plus une fois posé (le bout presse la cible), puis s'apaise en se retirant.
+            const agitation = age < finPique ? 0.1 : age < finRepos ? 0.22 : 0.12
+            const dx = tentacule.cible[0] - tentacule.base[0]
+            const dz = tentacule.cible[1] - tentacule.base[1]
+            const longueur = Math.hypot(dx, dz) || 1
+            const normaleX = -dz / longueur
+            const normaleZ = dx / longueur
+            for (let rang = 0; rang < SEGMENTS_TENTACULE; rang++) {
+                const part = rang / (SEGMENTS_TENTACULE - 1)
+                pointTentacule(tentacule, tete * part, pointTemporaire)
+                const ondulation = Math.sin(rang * 0.55 - temps * 7 + tentacule.phase) * agitation * part
+                const segment = tentacule.segments[rang]!
+                const rayon = 0.2 * (1 - 0.82 * part)
+                segment.scaling.set(rayon * 2, rayon * 2, rayon * 2)
+                segment.position.set(
+                    pointTemporaire[0] + normaleX * ondulation,
+                    pointTemporaire[1] + Math.cos(rang * 0.5 - temps * 6 + tentacule.phase) * agitation * 0.4 * part,
+                    pointTemporaire[2] + normaleZ * ondulation,
+                )
+            }
+        }
+    }
+
     // --- Animation, appelée avant chaque image -------------------------------------------------
     const avancer = (dt: number) => {
         temps += dt
@@ -935,18 +1076,36 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext, op
             }
         }
 
+        avancerTentacules(dt)
+
         for (const boulet of boulets) {
             if (!boulet.actif) continue
             boulet.age += dt
-            const avancement = borner(boulet.age / DUREE_VOL)
+            const avancement = borner(boulet.age / boulet.duree)
             boulet.maillage.position.set(
                 melange(boulet.depart[0], boulet.cible[0], avancement),
                 melange(boulet.depart[1], boulet.cible[1], avancement) + 1.3 * Math.sin(Math.PI * avancement),
                 melange(boulet.depart[2], boulet.cible[2], avancement),
             )
+            if (suiviBoulet && boulet.resultat === 'coule') {
+                const dx = boulet.cible[0] - boulet.depart[0]
+                const dz = boulet.cible[2] - boulet.depart[2]
+                const longueur = Math.hypot(dx, dz) || 1
+                suiviBoulet({
+                    x: boulet.maillage.position.x,
+                    y: boulet.maillage.position.y,
+                    z: boulet.maillage.position.z,
+                    directionX: dx / longueur,
+                    directionZ: dz / longueur,
+                    avancement,
+                    cibleX: boulet.cible[0],
+                    cibleZ: boulet.cible[2],
+                })
+            }
             if (avancement >= 1) {
                 boulet.actif = false
                 montrer(boulet.maillage, false)
+                if (boulet.resultat === 'coule') suiviBoulet?.(null)
                 traiterImpact(boulet)
             }
         }
@@ -1131,18 +1290,49 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext, op
     onBeforeRender(scene, (deltaMs) => avancer(Math.min(deltaMs, 50) / 1000))
 
     return {
-        dureeVol: DUREE_VOL,
+        get dureeVol() {
+            return DUREE_VOL
+        },
+        definirDureeVolCoulant(secondes) {
+            dureeVolCoulant = secondes
+        },
+        ecouterBoulet(rappel) {
+            suiviBoulet = rappel
+        },
         tirer(colonne, ligne, resultat, surImpact) {
             const boulet = boulets.find((candidat) => !candidat.actif) ?? boulets[0]!
             const { x, z } = caseVersMonde({ colonne, ligne })
             boulet.actif = true
             boulet.age = 0
             boulet.resultat = resultat
+            boulet.duree = resultat === 'coule' ? dureeVolCoulant : DUREE_VOL
             boulet.surImpact = surImpact
             boulet.cible = [x, 0.1, z]
             boulet.depart = [x - 2.6 * TAILLE_CASE, 5.5, z + 2.2 * TAILLE_CASE]
             boulet.maillage.position.set(...boulet.depart)
             montrer(boulet.maillage, true)
+        },
+        tirerKraken(colonne, ligne, resultat, retard, surImpact) {
+            const tentacule = tentacules.find((candidat) => !candidat.actif)
+            if (!tentacule) {
+                // Plus de tentacule libre : on n'anime pas, mais le résultat s'applique quand même.
+                taches.push({ reste: retard + DUREE_MONTEE_TENTACULE + DUREE_PIQUE_TENTACULE, action: surImpact })
+                return
+            }
+            const { x, z } = caseVersMonde({ colonne, ligne })
+            // Il jaillit de l'eau à quelques cases de la cible, dans une direction au hasard, sans sortir de la mer.
+            const angle = hasard(0, Math.PI * 2)
+            const distance = hasard(2.6, 3.4) * TAILLE_CASE
+            const limite = 6.4
+            tentacule.base = [borner(x + Math.cos(angle) * distance, -limite, limite), borner(z + Math.sin(angle) * distance, -limite, limite)]
+            tentacule.cible = [x, z]
+            tentacule.resultat = resultat
+            tentacule.surImpact = surImpact
+            tentacule.age = -retard
+            tentacule.impactFait = false
+            tentacule.surgi = false
+            tentacule.phase = hasard(0, Math.PI * 2)
+            tentacule.actif = true
         },
         definirFeu(colonne, ligne, actif) {
             const cle = `${colonne},${ligne}`

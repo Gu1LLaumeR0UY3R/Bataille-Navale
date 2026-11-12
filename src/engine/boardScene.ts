@@ -38,7 +38,7 @@ import { TAILLE_CASE, caseVersMonde } from './boardGeometry.ts'
 import { CASES_MODELE_BASE } from '../game/carte.ts'
 import { ecranVersCase } from './cellPicking.ts'
 import { hauteurVague as hauteurVagueHoule } from './vagues.ts'
-import { creerEau, creerEffets, type Effets } from './effets.ts'
+import { creerEau, creerEffets, type Effets, type SuiviBoulet } from './effets.ts'
 import { COULEUR_SABLE, creerDecorFondMarin } from './fondMarin.ts'
 import { DUREE_DRONES, INSTANT_REPARATION, NOMBRE_DRONES, poseDrone } from './dronesAnimation.ts'
 import { creerHorloge } from './horloge.ts'
@@ -99,6 +99,9 @@ export interface OptionsSceneGrille {
     carte?: Carte | null
     /** Appelé à chaque étape du chargement (moteur, effets, décor, navires, outils, compilation). */
     surProgres?: (progres: ProgresChargement) => void
+    /** Un boulet part vers une case / touche : l'interface s'en sert pour laisser le temps de voir l'impact. */
+    surTir?: () => void
+    surImpact?: (resultat: 'rate' | 'touche' | 'coule') => void
     /** Appelé quand la caméra orbitale bouge (alpha = tour, beta = hauteur) : sert au cube de vue. */
     surCamera?: (alpha: number, beta: number) => void
 }
@@ -132,7 +135,18 @@ export const VUES_CAMERA: Record<VueCamera, { alpha: number, beta: number, radiu
     arriere: { alpha: Math.PI / 2, beta: 1.0, radius: 16 },
 }
 
+/** Caméra épique, réservée au tir qui COULE un navire : durée de son vol (suivi par la caméra), puis temps sur l'impact. */
+const DUREE_VOL_EPIQUE = 1.5
+/** Intervalle entre deux tentacules du Kraken qui frappent une même grille. */
+const RETARD_ENTRE_TENTACULES = 0.8
+const DUREE_VOL_NORMALE = 0.6
+const DUREE_MAINTIEN_IMPACT = 0.8
+
 export interface SceneGrille {
+    /** Annonce les cases que le Kraken va frapper : leurs prochains tirs sont animés par des tentacules, pas par des boulets. */
+    preparerKraken(cases: readonly CoordCase[]): void
+    /** Active ou coupe la caméra épique (elle suit le boulet ; le vol est rallongé). */
+    definirCameraEpique(actif: boolean): void
     /** Place la caméra sur une des positions enregistrées (en glissant, sauf si `immediat`). */
     definirVueCamera(vue: VueCamera, immediat?: boolean): void
     /** Met à jour toutes les cases d'un coup. */
@@ -864,6 +878,9 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
         }
     }
 
+    /** Cases que le Kraken doit frapper, et rang du prochain tentacule (pour les faire arriver l'un après l'autre). */
+    const casesKraken = new Set<string>()
+    let rangKraken = 0
     const definirEtatCase = (colonne: number, ligne: number, etat: EtatCase) => {
         const avant = etatsCases[ligne]![colonne]!
         etatsCases[ligne]![colonne] = etat
@@ -878,7 +895,15 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
             (etat === 'rate' || etat === 'touche' || etat === 'coule')
         if (effets && initialise && nouveauTir) {
             impactsEnAttente.add(cleCase)
-            effets.tirer(colonne, ligne, etat === 'rate' ? 'rate' : etat === 'coule' ? 'coule' : 'touche', () => {
+            options.surTir?.()
+            // Un tir annoncé comme frappe du Kraken : un tentacule le porte (les 4 se succèdent toutes les 0,8 s).
+            const parKraken = casesKraken.delete(cleCase)
+            const lancer = parKraken
+                ? (r: 'rate' | 'touche' | 'coule', fin: () => void) => effets!.tirerKraken(colonne, ligne, r, (rangKraken++) * RETARD_ENTRE_TENTACULES, fin)
+                : (r: 'rate' | 'touche' | 'coule', fin: () => void) => effets!.tirer(colonne, ligne, r, fin)
+            if (parKraken && casesKraken.size === 0) queueMicrotask(() => { rangKraken = 0 })
+            lancer(etat === 'rate' ? 'rate' : etat === 'coule' ? 'coule' : 'touche', () => {
+                options.surImpact?.(etat === 'rate' ? 'rate' : etat === 'coule' ? 'coule' : 'touche')
                 impactsEnAttente.delete(cleCase)
                 appliquerMarques(colonne, ligne)
                 actualiserBateaux()
@@ -899,7 +924,86 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
 
     let estLiberee = false
     let transitionCamera: AbortController | null = null
+
+    // --- Caméra épique : elle part derrière le boulet, le suit jusqu'à l'eau, s'attarde sur l'impact, puis revient. ---
+    let cameraEpiqueActive = true
+    let etatEpique: 'repos' | 'suivi' = 'repos'
+    let vueAvantTir: { alpha: number, beta: number, radius: number, target: { x: number, y: number, z: number } } | null = null
+    let minuterieRetour: ReturnType<typeof setTimeout> | undefined
+    const versAngle = (actuel: number, cible: number, facteur: number) => {
+        const ecart = Math.atan2(Math.sin(cible - actuel), Math.cos(cible - actuel)) // le plus court chemin
+        return actuel + ecart * facteur
+    }
+    const retourDeLaCameraEpique = () => {
+        etatEpique = 'repos'
+        const camera = cameraOrbitale
+        const retour = vueAvantTir
+        vueAvantTir = null
+        if (!camera || !retour) return
+        const tour = Math.PI * 2
+        const alphaCible = retour.alpha + tour * Math.round((camera.alpha - retour.alpha) / tour)
+        transitionCamera?.abort()
+        transitionCamera = new AbortController()
+        void interpolateArcRotateCamera(
+            camera,
+            scene,
+            { alpha: alphaCible, beta: retour.beta, radius: retour.radius, target: retour.target },
+            transitionCamera.signal,
+            { interpolationFactor: 0.22 },
+        ).catch(() => undefined)
+    }
+    const suivreLeBoulet = (suivi: SuiviBoulet | null) => {
+        const camera = cameraOrbitale
+        if (!camera || !cameraEpiqueActive) return
+        clearTimeout(minuterieRetour)
+        if (!suivi) {
+            // Le boulet a touché : on laisse voir l'impact, puis la caméra rentre à sa place.
+            minuterieRetour = setTimeout(retourDeLaCameraEpique, DUREE_MAINTIEN_IMPACT * 1000)
+            return
+        }
+        if (etatEpique === 'repos') {
+            transitionCamera?.abort()
+            vueAvantTir = { alpha: camera.alpha, beta: camera.beta, radius: camera.radius, target: { x: camera.target.x, y: camera.target.y, z: camera.target.z } }
+            etatEpique = 'suivi'
+        }
+        // La caméra se place derrière le boulet, un peu de côté et au-dessus, et se rapproche à mesure qu'il descend.
+        const lateral = 0.55
+        const dx = suivi.directionX * Math.cos(lateral) - suivi.directionZ * Math.sin(lateral)
+        const dz = suivi.directionX * Math.sin(lateral) + suivi.directionZ * Math.cos(lateral)
+        const progression = suivi.avancement
+        const distance = 8.5 - 5.2 * Math.pow(progression, 1.4)
+        const hauteur = 2.6 - 1.6 * progression
+        const decalage = { x: -dx * distance, y: hauteur, z: -dz * distance }
+        const rayon = Math.hypot(decalage.x, decalage.y, decalage.z)
+        const beta = Math.acos(decalage.y / rayon)
+        const alpha = Math.atan2(decalage.z, decalage.x)
+        camera.alpha = versAngle(camera.alpha, alpha, 0.12)
+        camera.beta += (beta - camera.beta) * 0.12
+        camera.radius += (rayon - camera.radius) * 0.12
+        camera.target = {
+            x: camera.target.x + (suivi.x - camera.target.x) * 0.25,
+            y: camera.target.y + (Math.max(suivi.y * 0.8, 0.2) - camera.target.y) * 0.25,
+            z: camera.target.z + (suivi.z - camera.target.z) * 0.25,
+        }
+    }
+    const reglerCameraEpique = (actif: boolean) => {
+        cameraEpiqueActive = actif && cameraOrbitale !== null
+        effets?.definirDureeVolCoulant(cameraEpiqueActive ? DUREE_VOL_EPIQUE : DUREE_VOL_NORMALE)
+        effets?.ecouterBoulet(cameraEpiqueActive ? suivreLeBoulet : null)
+        if (!cameraEpiqueActive && etatEpique === 'suivi') {
+            clearTimeout(minuterieRetour)
+            retourDeLaCameraEpique()
+        }
+    }
+    reglerCameraEpique(true)
+
     return {
+        preparerKraken(cases) {
+            casesKraken.clear()
+            rangKraken = 0
+            for (const { colonne, ligne } of cases) casesKraken.add(`${colonne},${ligne}`)
+        },
+        definirCameraEpique: reglerCameraEpique,
         definirEtatCase,
         definirVueCamera(vue, immediat = false) {
             if (!cameraOrbitale) return

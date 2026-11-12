@@ -13,6 +13,10 @@ const proprietes = withDefaults(
         vue?: 'inclinee' | 'dessus'
         /** Position de caméra enregistrée (vue inclinée seulement). */
         vueCamera?: VueCamera
+        /** La caméra suit le boulet qui coule un navire (et son vol est rallongé). */
+        cameraEpique?: boolean
+        /** Le Kraken va frapper ces cases : à fournir AVANT de mettre à jour les tirs correspondants. */
+        attaqueKraken?: { id: number, cases: CoordCase[] } | null
         interactif?: boolean
         apercu?: { cases: CoordCase[]; valide: boolean; balise?: boolean } | null
         bateaux?: Bateau[]
@@ -26,7 +30,7 @@ const proprietes = withDefaults(
         couleurFondMarin?: Couleur
         carte?: Carte | null
     }>(),
-    { vue: 'inclinee', vueCamera: 'avant', interactif: false, apercu: null, bateaux: () => [], outils: () => [], boucliers: () => [], reparation: null, impactBouclier: null, couleurFondMarin: () => [1.0, 0.2, 0.2], carte: null },
+    { vue: 'inclinee', vueCamera: 'avant', cameraEpique: true, interactif: false, apercu: null, bateaux: () => [], outils: () => [], boucliers: () => [], reparation: null, impactBouclier: null, couleurFondMarin: () => [1.0, 0.2, 0.2], carte: null },
 )
 
 const emettre = defineEmits<{
@@ -40,6 +44,9 @@ const emettre = defineEmits<{
     progres: [progres: ProgresChargement]
     /** La caméra a bougé (alpha = tour, beta = hauteur) : le cube de vue la suit. */
     camera: [alpha: number, beta: number]
+    /** Un boulet part / touche sur cette grille. */
+    tir: []
+    impact: [resultat: 'rate' | 'touche' | 'coule']
     /** La scène est entièrement chargée et affichée. */
     pret: []
     /** La scène n'a pas pu être créée (WebGPU absent, modèle illisible…). */
@@ -67,6 +74,8 @@ onMounted(async () => {
             carte: proprietes.carte,
             surProgres: (progres) => emettre('progres', progres),
             surCamera: (alpha, beta) => emettre('camera', alpha, beta),
+            surTir: () => emettre('tir'),
+            surImpact: (resultat) => emettre('impact', resultat),
         })
 
         if (estDemonte) {
@@ -91,6 +100,7 @@ onMounted(async () => {
         sceneCreee.definirOutils(proprietes.outils)
         sceneCreee.definirBoucliers(proprietes.boucliers)
         appliquerApercu()
+        sceneCreee.definirCameraEpique(proprietes.cameraEpique)
         if (proprietes.vueCamera && proprietes.vueCamera !== 'avant') sceneCreee.definirVueCamera(proprietes.vueCamera, true)
         emettre('pret')
     } catch (erreurCapturee) {
@@ -99,6 +109,10 @@ onMounted(async () => {
     }
 })
 
+watch(() => proprietes.attaqueKraken?.id, () => {
+    if (proprietes.attaqueKraken) sceneGrille.value?.preparerKraken(proprietes.attaqueKraken.cases)
+})
+watch(() => proprietes.cameraEpique, (actif) => sceneGrille.value?.definirCameraEpique(actif))
 watch(() => proprietes.vueCamera, (vue) => {
     if (vue) sceneGrille.value?.definirVueCamera(vue)
 })

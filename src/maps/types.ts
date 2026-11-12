@@ -26,6 +26,19 @@ export type Decor =
     | DecorSimple<'bouee'>
     | { type: 'modele', fichier: string, x: number, y: number, z: number, echelle: number, rotation: number }
 
+/** Le Kraken : à partir du tour `debut`, puis tous les `intervalle` tours, des tentacules frappent chaque grille. */
+export interface EvenementKraken {
+    debut: number
+    intervalle: number
+    /** Tentacules par grille et par attaque. */
+    tentacules: number
+}
+
+/** Évènements propres à une carte (facultatifs). */
+export interface EvenementsCarte {
+    kraken?: EvenementKraken
+}
+
 export interface Carte {
     id: string
     nom: string
@@ -34,6 +47,7 @@ export interface Carte {
     apercu: string | null
     ambiance: Ambiance
     decors: Decor[]
+    evenements: EvenementsCarte
     /** Dossier de la carte, pour retrouver ses fichiers (modèles 3D, aperçu). */
     base: string
 }

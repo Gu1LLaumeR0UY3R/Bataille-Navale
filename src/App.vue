@@ -19,7 +19,7 @@ import { calculerStats, type StatsPartie } from './game/stats.ts'
 import type { Carte } from './maps/types.ts'
 import { bateauSurCase, casesBateau, tousCoules, grilleAvecTirs, placerFlotteAleatoirement, resoudreTir } from './game/rules.ts'
 import { creerIA, DIFFICULTES, type Difficulte, type IA } from './game/ai.ts'
-import { FLOTTE, type CoordCase, type Bateau } from './game/types.ts'
+import { FLOTTE, TAILLE_GRILLE, type CoordCase, type Bateau } from './game/types.ts'
 import { evaluerReparation, messagesRefusReparation, retirerTirs, tirBloque } from './game/reparation.ts'
 import { sonAchat, sonAnnulation, sonBouclier, sonContacts, sonDrones, sonReparation, sonSelection, sonSonar } from './game/son.ts'
 import { DUREE_DRONES, INSTANT_REPARATION } from './engine/dronesAnimation.ts'
@@ -120,15 +120,63 @@ function surCameraGrille(grille: GrilleAffichee, alpha: number, beta: number) {
 
 /** Pendant votre tour, on voit la zone ennemie en grand (c'est vous qui tirez) ; pendant le sien, votre flotte. */
 const grilleAffichee = ref<GrilleAffichee>('ma')
-/** Délais avant de passer d'une grille à l'autre à un changement de tour : on laisse le tir (et son impact) se jouer. */
-const DELAI_VERS_MA = 1900
-const DELAI_VERS_ENNEMIE = 1100
+/** Temps laissé après un impact pour le voir (éclaboussure, explosion, résultat) avant de changer de grille. */
+const SEJOUR_SUR_GRILLE_ENNEMIE = 2200
+/** Un tir sur VOTRE flotte : on s'y attarde un peu plus longtemps (+ 0,4 s). */
+const SEJOUR_SUR_MA_GRILLE = 2600
+/** Un navire qui coule : on reste le temps de le voir s'enfoncer. */
+const SEJOUR_NAVIRE_COULE = 4300
+/** Si l'impact n'est jamais signalé (animation absente), on bascule quand même au bout de ce délai. */
+const ATTENTE_MAX_BASCULE = 8000
+const tirsEnVol: Record<GrilleAffichee, number> = { ma: 0, ennemie: 0 }
+const dernierImpact: Record<GrilleAffichee, number> = { ma: -Infinity, ennemie: -Infinity }
+const sejourDernierImpact: Record<GrilleAffichee, number> = { ma: SEJOUR_SUR_MA_GRILLE, ennemie: SEJOUR_SUR_GRILLE_ENNEMIE }
+function surTirGrille(grille: GrilleAffichee) {
+    tirsEnVol[grille]++
+}
+function surImpactGrille(grille: GrilleAffichee, resultat: 'rate' | 'touche' | 'coule') {
+    tirsEnVol[grille] = Math.max(0, tirsEnVol[grille] - 1)
+    dernierImpact[grille] = Date.now()
+    sejourDernierImpact[grille] = resultat === 'coule' ? SEJOUR_NAVIRE_COULE : grille === 'ma' ? SEJOUR_SUR_MA_GRILLE : SEJOUR_SUR_GRILLE_ENNEMIE
+}
+/** Caméra épique : suit le boulet du tir qui coule un navire. Réglage mémorisé. */
+const CLE_CAMERA_EPIQUE = 'bataille-navale:camera-epique'
+const cameraEpique = ref(((): boolean => {
+    try { return localStorage.getItem(CLE_CAMERA_EPIQUE) !== 'non' } catch { return true }
+})())
+function basculerCameraEpique() {
+    cameraEpique.value = !cameraEpique.value
+    try { localStorage.setItem(CLE_CAMERA_EPIQUE, cameraEpique.value ? 'oui' : 'non') } catch { /* sans importance */ }
+}
 let minuterieBascule: ReturnType<typeof setTimeout> | undefined
+/** Moment où la grille affichée a été mise à l'écran (début de la traversée). */
+let vueArriveeMs = 0
+/** L'adversaire n'agit que lorsque sa cible est à l'écran depuis ce temps : la traversée de la mer dure environ 1,8 s. */
+const ATTENTE_VUE_AVANT_ACTION_ADVERSE = 900
+const ATTENTE_MAX_ACTION_ADVERSE = 12000
+/** Change de grille une fois le tir en cours vu en entier : boulet arrivé, puis le temps de regarder le résultat. */
+function basculerQuandTirVu(grille: GrilleAffichee) {
+    clearTimeout(minuterieBascule)
+    if (grille === grilleAffichee.value) return
+    const debut = Date.now()
+    const verifier = () => {
+        const regardee = grilleAffichee.value
+        const attenteTerminee = Date.now() - debut >= ATTENTE_MAX_BASCULE
+        const encoreEnCours = tirsEnVol[regardee] > 0 || Date.now() - dernierImpact[regardee] < sejourDernierImpact[regardee]
+        if (encoreEnCours && !attenteTerminee) {
+            minuterieBascule = setTimeout(verifier, 120)
+            return
+        }
+        basculerVers(grille, 0)
+    }
+    minuterieBascule = setTimeout(verifier, 300)
+}
 function basculerVers(grille: GrilleAffichee, delai: number) {
     clearTimeout(minuterieBascule)
     if (grille === grilleAffichee.value) return
     const appliquer = () => {
         grilleAffichee.value = grille
+        vueArriveeMs = Date.now()
         Object.assign(angleCamera, angleParGrille[grille])
     }
     if (delai <= 0) appliquer()
@@ -188,8 +236,9 @@ watch([aMoiDeJouer, cibleSurMaGrille, dronesAdversesEnVol, etape], ([moi, defens
     const voulue: GrilleAffichee = dronesAdverses || (moi && !defensif) ? 'ennemie' : 'ma'
     const depart = !ancien || ancien[3] !== etapeActuelle
     const changementDOutil = !!ancien && ancien[1] !== defensif
-    const delai = depart || changementDOutil || dronesAdverses ? 0 : voulue === 'ma' ? DELAI_VERS_MA : DELAI_VERS_ENNEMIE
-    basculerVers(voulue, depart ? 600 : delai)
+    if (depart) basculerVers(voulue, 600)
+    else if (changementDOutil || dronesAdverses) basculerVers(voulue, 0)
+    else basculerQuandTirVu(voulue)
 })
 const consigneAdversaire = computed(() => {
     if (etape.value !== 'en_cours') return 'Fin de la partie'
@@ -263,6 +312,10 @@ function demarrerPartie(bateaux: Bateau[]) {
     Object.assign(joueur, creerArsenal())
     Object.assign(adverse, creerArsenal())
     numeroTourAdverse = 0
+    jetonKraken++
+    annonceEvenement.value = null
+    attaqueKrakenMaGrille.value = null
+    attaqueKrakenEnnemie.value = null
     poissonsEnVol.value = 0
     outilSelectionne.value = null
     derniereRecherche.value = ''
@@ -523,8 +576,25 @@ function finirTourJoueur(aTire: boolean, attente = 900, garderBouclier = false) 
     minuterieAdverse = setTimeout(() => {
         reflexionAdverse.value = true
         message.value = 'L’adversaire réfléchit…'
-        minuterieAdverse = setTimeout(jouerTourAdverse, delaiReflexion())
+        minuterieAdverse = setTimeout(() => quandVueSurMaGrille(jouerTourAdverse), delaiReflexion())
     }, attente)
+}
+
+/**
+ * L'adversaire n'agit (tir, sonar, drones) que quand votre flotte est affichée en grand depuis un moment :
+ * sinon son tir tomberait pendant que vous regardez l'autre grille, et vous ne verriez rien.
+ */
+function quandVueSurMaGrille(action: () => void) {
+    const debut = Date.now()
+    const verifier = () => {
+        const prete = grilleAffichee.value === 'ma' && Date.now() - vueArriveeMs >= ATTENTE_VUE_AVANT_ACTION_ADVERSE
+        if (prete || Date.now() - debut >= ATTENTE_MAX_ACTION_ADVERSE) {
+            action()
+            return
+        }
+        minuterieAdverse = setTimeout(verifier, 120)
+    }
+    verifier()
 }
 
 /** Temps de réflexion de l'IA, en millisecondes : plus le niveau est haut, plus elle « réfléchit » longtemps. */
@@ -557,6 +627,122 @@ function finirTourAdverse(aTire: boolean, garderBouclier = false) {
         else apresTirAdverse(joueur)
     }
     apresTourAdverse(joueur)
+    // Évènement de la carte : le Kraken frappe à intervalles réguliers, après un avertissement.
+    if (krakenDu(numeroTourAdverse)) {
+        void attaqueDuKraken()
+        return
+    }
+    if (krakenDu(numeroTourAdverse + 1)) annoncer('La mer bouillonne… le Kraken s’éveille.', 'Quelque chose remue sous la surface : le Kraken frappera à la fin du prochain tour.')
+    aMoiDeJouer.value = true
+    debutTourJoueur()
+}
+
+// --- Le Kraken (évènement de carte) ------------------------------------------------------------------------
+/** À chaque attaque, 4 tentacules (réglable par carte) frappent des cases au hasard sur CHAQUE grille. */
+const annonceEvenement = ref<string | null>(null)
+const attaqueKrakenMaGrille = ref<{ id: number, cases: CoordCase[] } | null>(null)
+const attaqueKrakenEnnemie = ref<{ id: number, cases: CoordCase[] } | null>(null)
+let jetonKraken = 0
+let minuterieAnnonce: ReturnType<typeof setTimeout> | undefined
+
+function annoncer(titre: string, detail?: string) {
+    annonceEvenement.value = titre
+    if (detail) message.value = detail
+    clearTimeout(minuterieAnnonce)
+    minuterieAnnonce = setTimeout(() => { annonceEvenement.value = null }, 3800)
+}
+/** Le Kraken attaque-t-il à la fin de ce tour (tour numéro `tour`, compté depuis 1) ? */
+function krakenDu(tour: number): boolean {
+    const kraken = carte.value?.evenements.kraken
+    return !!kraken && tour >= kraken.debut && (tour - kraken.debut) % kraken.intervalle === 0
+}
+const attendre = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+/** Attend que les tirs en vol sur cette grille soient arrivés, puis `sejour` ms pour en voir l'effet. */
+async function attendreFinDesTirs(grille: GrilleAffichee, sejour: number, maximum = 14000) {
+    const debut = Date.now()
+    while (Date.now() - debut < maximum) {
+        if (tirsEnVol[grille] <= 0 && Date.now() - dernierImpact[grille] >= sejour) return
+        await attendre(120)
+    }
+}
+function casesLibres(tirs: readonly CoordCase[]): CoordCase[] {
+    const libres: CoordCase[] = []
+    for (let ligne = 0; ligne < TAILLE_GRILLE; ligne++) {
+        for (let colonne = 0; colonne < TAILLE_GRILLE; colonne++) {
+            if (!tirs.some((tir) => tir.colonne === colonne && tir.ligne === ligne)) libres.push({ colonne, ligne })
+        }
+    }
+    return libres
+}
+function tirerAuHasard<T>(liste: T[], nombre: number): T[] {
+    const copie = [...liste]
+    const choisies: T[] = []
+    while (choisies.length < nombre && copie.length > 0) choisies.push(copie.splice(Math.floor(Math.random() * copie.length), 1)[0]!)
+    return choisies
+}
+
+async function attaqueDuKraken() {
+    const jeton = ++jetonKraken
+    const parametres = carte.value?.evenements.kraken
+    const enCours = () => jeton === jetonKraken && etape.value === 'en_cours'
+    if (!parametres) return
+    // Le tir adverse qui vient de partir doit d'abord être vu en entier.
+    await attendreFinDesTirs('ma', 1200)
+    if (!enCours()) return
+    annoncer('Le Kraken surgit !', 'Le Kraken surgit des profondeurs et frappe les deux flottes !')
+
+    // 1) votre flotte
+    basculerVers('ma', 0)
+    await attendre(2300)
+    if (!enCours()) return
+    const tirsSurMoi = [...tirsAdversesChezMoi.value]
+    const casesMa = tirerAuHasard(casesLibres(tirsSurMoi), parametres.tentacules)
+    let touchesSurMoi = 0
+    let couleesSurMoi = 0
+    for (const caseGrille of casesMa) {
+        const resultat = resoudreTir(mesBateaux.value, tirsSurMoi, caseGrille)
+        tirsSurMoi.push(caseGrille)
+        if (resultat !== 'rate') touchesSurMoi++
+        if (resultat === 'coule') couleesSurMoi++
+        // L'adversaire voit lui aussi ce que le Kraken a touché chez vous.
+        ia?.enregistrerResultat(caseGrille, resultat, resultat === 'coule' ? bateauSurCase(mesBateaux.value, caseGrille) : undefined)
+    }
+    attaqueKrakenMaGrille.value = { id: ++compteurAnimation, cases: casesMa }
+    await nextTick()
+    tirsAdversesChezMoi.value = tirsSurMoi
+    await attendre(600)
+    await attendreFinDesTirs('ma', 1800)
+    if (!enCours()) return
+    message.value = touchesSurMoi > 0
+        ? `Le Kraken a frappé votre flotte : ${touchesSurMoi} case${touchesSurMoi > 1 ? 's' : ''} touchée${touchesSurMoi > 1 ? 's' : ''}${couleesSurMoi > 0 ? `, ${couleesSurMoi} navire${couleesSurMoi > 1 ? 's' : ''} coulé${couleesSurMoi > 1 ? 's' : ''}` : ''}.`
+        : 'Le Kraken a frappé votre flotte… et n’a touché que l’eau.'
+    if (tousCoules(mesBateaux.value, tirsAdversesChezMoi.value)) return terminerPartie('adversaire')
+
+    // 2) flotte adverse
+    basculerVers('ennemie', 0)
+    await attendre(2300)
+    if (!enCours()) return
+    const mesTirs = [...mesTirsChezAdversaire.value]
+    const casesEnnemies = tirerAuHasard(casesLibres(mesTirs), parametres.tentacules)
+    let touchesChezLui = 0
+    let couleesChezLui = 0
+    for (const caseGrille of casesEnnemies) {
+        const resultat = resoudreTir(bateauxAdverses.value, mesTirs, caseGrille)
+        mesTirs.push(caseGrille)
+        if (resultat !== 'rate') touchesChezLui++
+        if (resultat === 'coule') couleesChezLui++
+    }
+    attaqueKrakenEnnemie.value = { id: ++compteurAnimation, cases: casesEnnemies }
+    await nextTick()
+    mesTirsChezAdversaire.value = mesTirs
+    await attendre(600)
+    await attendreFinDesTirs('ennemie', 1800)
+    if (!enCours()) return
+    message.value = touchesChezLui > 0
+        ? `Le Kraken a frappé la flotte adverse : ${touchesChezLui} case${touchesChezLui > 1 ? 's' : ''} touchée${touchesChezLui > 1 ? 's' : ''}${couleesChezLui > 0 ? `, ${couleesChezLui} navire${couleesChezLui > 1 ? 's' : ''} coulé${couleesChezLui > 1 ? 's' : ''}` : ''}.`
+        : 'Le Kraken a frappé la flotte adverse… et n’a touché que l’eau.'
+    if (tousCoules(bateauxAdverses.value, mesTirsChezAdversaire.value)) return terminerPartie('moi')
+
     aMoiDeJouer.value = true
     debutTourJoueur()
 }
@@ -755,24 +941,31 @@ const libelleEtape = computed(() => ({
                 </p>
 
                 <section class="grilles">
+                    <Transition name="annonce">
+                        <div v-if="annonceEvenement" class="annonce-evenement" role="status">{{ annonceEvenement }}</div>
+                    </Transition>
                     <CubeVue :alpha="angleCamera.alpha" :beta="angleCamera.beta" @choisir="choisirVueCamera" />
+                    <button type="button" class="bouton-camera-epique" :class="{ active: cameraEpique }" :aria-pressed="cameraEpique"
+                        :title="cameraEpique ? 'Caméra épique activée : elle suit le boulet qui coule un navire' : 'Caméra épique coupée'" @click="basculerCameraEpique">
+                        <span aria-hidden="true">🎥</span> Épique
+                    </button>
                     <figure ref="elementMaFlotte" class="carte-grille" :class="grilleAffichee === 'ma' ? 'visible' : 'cachee'"
                         :aria-hidden="grilleAffichee !== 'ma'">
                         <figcaption><span class="etiquette-grille">VOTRE FLOTTE</span><strong>Le port d’attache</strong><small>{{ mesBateaux.length }} navires en mer</small></figcaption>
-                        <Grille3D :cases="maGrille" :vue-camera="vueCamera" :bateaux="mesBateaux" :outils="outilsMaGrille" :boucliers="joueur.boucliers"
+                        <Grille3D :cases="maGrille" :vue-camera="vueCamera" :camera-epique="cameraEpique" :attaque-kraken="attaqueKrakenMaGrille" :bateaux="mesBateaux" :outils="outilsMaGrille" :boucliers="joueur.boucliers"
                             :reparation="reparationEnCours" :impact-bouclier="impactBouclier" :apercu="apercuMaGrille"
                             :interactif="etape === 'en_cours' && aMoiDeJouer && cibleSurMaGrille"
-                            @clic-case="utiliserOutilSurCase" @survol-case="survolMaGrille = $event" @camera="(a, b) => surCameraGrille('ma', a, b)"
+                            @clic-case="utiliserOutilSurCase" @survol-case="survolMaGrille = $event" @camera="(a, b) => surCameraGrille('ma', a, b)" @tir="surTirGrille('ma')" @impact="surImpactGrille('ma', $event)"
                             @reparation-faite="appliquerReparation" @reparation-finie="terminerSequenceDrones"
                             @progres="surProgres('ma', $event)" @pret="surScenePrete('ma')" @echec="surScenePrete('ma')" :carte="carte" />
                     </figure>
                     <figure class="carte-grille" :class="grilleAffichee === 'ennemie' ? 'visible' : 'cachee'"
                         :aria-hidden="grilleAffichee !== 'ennemie'">
                         <figcaption><span class="etiquette-grille">ZONE ENNEMIE</span><strong>Le large inconnu</strong><small>{{ consigneAdversaire }}</small></figcaption>
-                        <Grille3D :cases="grilleAdverse" :vue-camera="vueCamera" :bateaux="bateauxAdversesCoules" :outils="outilsGrilleAdverse"
+                        <Grille3D :cases="grilleAdverse" :vue-camera="vueCamera" :camera-epique="cameraEpique" :attaque-kraken="attaqueKrakenEnnemie" :bateaux="bateauxAdversesCoules" :outils="outilsGrilleAdverse"
                             :boucliers="adverse.boucliers" :reparation="reparationAdverse" :impact-bouclier="impactBouclierAdverse"
                             :apercu="apercuSonar" :interactif="etape === 'en_cours' && aMoiDeJouer && grilleAffichee === 'ennemie'"
-                            @clic-case="tirer" @survol-case="survolEnnemi = $event" @camera="(a, b) => surCameraGrille('ennemie', a, b)"
+                            @clic-case="tirer" @survol-case="survolEnnemi = $event" @camera="(a, b) => surCameraGrille('ennemie', a, b)" @tir="surTirGrille('ennemie')" @impact="surImpactGrille('ennemie', $event)"
                             @reparation-faite="appliquerReparationAdverse" @reparation-finie="terminerSequenceDronesAdverse"
                             @progres="surProgres('ennemie', $event)" @pret="surScenePrete('ennemie')" @echec="surScenePrete('ennemie')" :carte="carte" />
                     </figure>
@@ -1158,12 +1351,12 @@ const libelleEtape = computed(() => ({
 }
 .carte-grille.visible {
     z-index: 2;
-    animation: arrivee-grille 950ms cubic-bezier(0.22, 0.8, 0.25, 1) 220ms both;
+    animation: arrivee-grille 1400ms cubic-bezier(0.22, 0.8, 0.25, 1) 450ms both;
 }
 .carte-grille.cachee {
     z-index: 1;
     pointer-events: none;
-    animation: depart-grille 620ms cubic-bezier(0.5, 0, 0.9, 0.5) both;
+    animation: depart-grille 900ms cubic-bezier(0.5, 0, 0.9, 0.5) both;
 }
 /* Traversée de la mer : la caméra file vers l'horizon (la grille quittée s'éloigne en grossissant et se dilue),
    puis la nouvelle grille se rapproche depuis le large. */
@@ -1178,6 +1371,53 @@ const libelleEtape = computed(() => ({
     .carte-grille.visible { animation: fondu-grille 300ms ease both; }
     .carte-grille.cachee { animation: none; opacity: 0; visibility: hidden; }
     @keyframes fondu-grille { from { opacity: 0; } }
+}
+.annonce-evenement {
+    position: absolute;
+    top: 38%;
+    left: 50%;
+    z-index: 8;
+    translate: -50% -50%;
+    padding: 0.9rem 2.2rem;
+    border: 2px solid #f0b46c;
+    border-radius: 16px;
+    background: linear-gradient(180deg, rgb(40 10 28 / 90%), rgb(18 6 22 / 92%));
+    box-shadow: 0 0 40px rgb(160 40 90 / 55%);
+    color: #ffe4c4;
+    font-family: var(--police-titres);
+    font-size: clamp(1.3rem, 3.4vw, 2.2rem);
+    letter-spacing: 0.04em;
+    text-align: center;
+    pointer-events: none;
+}
+.annonce-enter-active,
+.annonce-leave-active {
+    transition: opacity 500ms ease, scale 500ms ease;
+}
+.annonce-enter-from,
+.annonce-leave-to {
+    opacity: 0;
+    scale: 0.85;
+}
+.bouton-camera-epique {
+    position: absolute;
+    top: 6.6rem;
+    right: 1.1rem;
+    z-index: 6;
+    padding: 0.3rem 0.7rem;
+    border: 2px solid rgb(201 132 60 / 90%);
+    border-radius: 999px;
+    background: rgb(7 32 52 / 70%);
+    color: rgb(246 234 208 / 75%);
+    font: inherit;
+    font-size: 0.74rem;
+    font-weight: 700;
+    cursor: pointer;
+    backdrop-filter: blur(5px);
+}
+.bouton-camera-epique.active {
+    background: var(--cuivre);
+    color: #fff8e6;
 }
 /* La toile remplit toute la zone. */
 .carte-grille :deep(.grille) {

@@ -3,7 +3,7 @@
 // sans recompiler.
 
 import type { Couleur } from '../game/types.ts'
-import type { Ambiance, Carte, Decor, Vec3 } from './types.ts'
+import type { Ambiance, Carte, Decor, EvenementsCarte, Vec3 } from './types.ts'
 
 const RACINE = `${import.meta.env.BASE_URL}cartes/`
 
@@ -18,7 +18,7 @@ export const AMBIANCE_DEFAUT: Ambiance = {
 /** Carte de secours : utilisée si aucun fichier de carte n'est lisible. */
 export const CARTE_DEFAUT: Carte = {
     id: 'lagon', nom: 'Le lagon', description: 'Mer calme sous un soleil haut.',
-    apercu: null, ambiance: AMBIANCE_DEFAUT, decors: [], base: `${RACINE}lagon/`,
+    apercu: null, ambiance: AMBIANCE_DEFAUT, decors: [], evenements: {}, base: `${RACINE}lagon/`,
 }
 
 type Brut = Record<string, unknown>
@@ -70,6 +70,18 @@ function lireDecor(brut: unknown): Decor | null {
     return (TYPES_SIMPLES as readonly unknown[]).includes(type) ? { type: type as (typeof TYPES_SIMPLES)[number], x, z, echelle } : null
 }
 
+function lireEvenements(brut: unknown): EvenementsCarte {
+    if (!estObjet(brut) || !estObjet(brut.kraken)) return {}
+    const kraken = brut.kraken
+    return {
+        kraken: {
+            debut: Math.round(nombre(kraken.debut, 10, 2, 60)),
+            intervalle: Math.round(nombre(kraken.intervalle, 4, 1, 30)),
+            tentacules: Math.round(nombre(kraken.tentacules, 4, 1, 6)),
+        },
+    }
+}
+
 export function lireCarte(brut: unknown, id: string): Carte | null {
     if (!estObjet(brut)) return null
     const decors = Array.isArray(brut.decors) ? brut.decors.slice(0, 60).map(lireDecor).filter((d): d is Decor => d !== null) : []
@@ -81,6 +93,7 @@ export function lireCarte(brut: unknown, id: string): Carte | null {
         apercu,
         ambiance: lireAmbiance(brut.ambiance),
         decors,
+        evenements: lireEvenements(brut.evenements),
         base: `${RACINE}${id}/`,
     }
 }
