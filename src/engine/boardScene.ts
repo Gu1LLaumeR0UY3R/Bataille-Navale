@@ -38,7 +38,7 @@ import { TAILLE_CASE, caseVersMonde } from './boardGeometry.ts'
 import { CASES_MODELE_BASE } from '../game/carte.ts'
 import { ecranVersCase } from './cellPicking.ts'
 import { hauteurVague as hauteurVagueHoule } from './vagues.ts'
-import { creerEau, creerEffets, type Effets, type SuiviBoulet } from './effets.ts'
+import { creerEau, creerEffets, type Effets, type QualiteAdaptative, type SuiviBoulet } from './effets.ts'
 import { COULEUR_SABLE, creerDecorFondMarin } from './fondMarin.ts'
 import { DUREE_DRONES, INSTANT_REPARATION, NOMBRE_DRONES, poseDrone } from './dronesAnimation.ts'
 import { creerHorloge } from './horloge.ts'
@@ -143,6 +143,8 @@ const DUREE_VOL_NORMALE = 0.6
 const DUREE_MAINTIEN_IMPACT = 0.8
 
 export interface SceneGrille {
+    /** Met le rendu de cette scène en marche ou en pause (la grille qu'on ne voit pas n'a pas besoin d'être dessinée). */
+    definirActive(active: boolean): void
     /** Annonce les cases que le Kraken va frapper : leurs prochains tirs sont animés par des tentacules, pas par des boulets. */
     preparerKraken(cases: readonly CoordCase[]): void
     /** Active ou coupe la caméra épique (elle suit le boulet ; le vol est rallongé). */
@@ -236,6 +238,8 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
     if (!('gpu' in navigator)) throw new Error('WebGPU non disponible dans ce navigateur.')
 
     const ambiance = options.carte?.ambiance ?? AMBIANCE_DEFAUT
+    /** Partagée avec l'eau et les effets : monte quand la scène ralentit. */
+    const qualite: QualiteAdaptative = { niveau: 0 }
     /** Hauteur de la houle de cette carte : tout ce qui flotte (navires, marqueurs, décors) l'utilise. */
     const hauteurVague = (x: number, z: number, temps: number) => hauteurVagueHoule(x, z, temps, ambiance.agitation)
 
@@ -326,9 +330,11 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
             opacite: { surface: OPACITE_SURFACE, parois: OPACITE_PAROIS },
             strates: { nombre: 4, opacite: 0.16, couleurFond: [0.04, 0.3, 0.5] },
             agitation: ambiance.agitation,
+            qualite,
+            lumiere: { ciel: ambiance.lumiereCiel, soleil: ambiance.soleil },
         })
         creerDecorFondMarin(moteur, scene, { taille: TAILLE_GRILLE + 4, fond: FOND_MARIN, tailleGrille: TAILLE_GRILLE })
-        effets = await creerEffets(moteur, scene, { agitation: ambiance.agitation, niveauEau: NIVEAU_EAU })
+        effets = await creerEffets(moteur, scene, { agitation: ambiance.agitation, niveauEau: NIVEAU_EAU, qualite })
         avancer('Mise en place des effets')
 
         // Quadrillage sur le sable, vu à travers l'eau : un large trait sombre (contraste avec le sable clair)
@@ -997,7 +1003,42 @@ export async function creerSceneGrille(toile: HTMLCanvasElement, options: Option
     }
     reglerCameraEpique(true)
 
+    // --- Qualité adaptative : on mesure la fluidité et on allège l'eau et l'écume quand elle chute. ---
+    let sommeImages = 0
+    let nombreImages = 0
+    let tempsDepuisDebut = 0
+    onBeforeRender(scene, (deltaMs) => {
+        tempsDepuisDebut += deltaMs
+        if (tempsDepuisDebut < 3000 || deltaMs > 250) return // on ignore le chargement et les pauses (onglet masqué)
+        sommeImages += deltaMs
+        nombreImages++
+        const moyenne = sommeImages / nombreImages
+        if (nombreImages >= 90 && moyenne > 22 && qualite.niveau < 2) {
+            qualite.niveau = (qualite.niveau + 1) as 0 | 1 | 2
+            sommeImages = 0
+            nombreImages = 0
+        } else if (nombreImages >= 400 && moyenne < 14 && qualite.niveau > 0) {
+            qualite.niveau = (qualite.niveau - 1) as 0 | 1 | 2
+            sommeImages = 0
+            nombreImages = 0
+        } else if (nombreImages >= 400) {
+            sommeImages = 0
+            nombreImages = 0
+        }
+    })
+
+    let moteurEnMarche = true
     return {
+        definirActive(active) {
+            if (active === moteurEnMarche) return
+            moteurEnMarche = active
+            if (active) {
+                tempsDepuisDebut = 0 // le premier instant après la reprise n'est pas représentatif
+                void startEngine(moteur)
+            } else {
+                stopEngine(moteur)
+            }
+        },
         preparerKraken(cases) {
             casesKraken.clear()
             rangKraken = 0

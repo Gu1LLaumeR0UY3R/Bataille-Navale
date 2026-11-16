@@ -15,6 +15,8 @@ const proprietes = withDefaults(
         vueCamera?: VueCamera
         /** La caméra suit le boulet qui coule un navire (et son vol est rallongé). */
         cameraEpique?: boolean
+        /** Faux quand la grille n'est pas à l'écran : son rendu est mis en pause. */
+        active?: boolean
         /** Le Kraken va frapper ces cases : à fournir AVANT de mettre à jour les tirs correspondants. */
         attaqueKraken?: { id: number, cases: CoordCase[] } | null
         interactif?: boolean
@@ -30,7 +32,7 @@ const proprietes = withDefaults(
         couleurFondMarin?: Couleur
         carte?: Carte | null
     }>(),
-    { vue: 'inclinee', vueCamera: 'avant', cameraEpique: true, interactif: false, apercu: null, bateaux: () => [], outils: () => [], boucliers: () => [], reparation: null, impactBouclier: null, couleurFondMarin: () => [1.0, 0.2, 0.2], carte: null },
+    { vue: 'inclinee', vueCamera: 'avant', cameraEpique: true, active: true, interactif: false, apercu: null, bateaux: () => [], outils: () => [], boucliers: () => [], reparation: null, impactBouclier: null, couleurFondMarin: () => [1.0, 0.2, 0.2], carte: null },
 )
 
 const emettre = defineEmits<{
@@ -101,6 +103,7 @@ onMounted(async () => {
         sceneCreee.definirBoucliers(proprietes.boucliers)
         appliquerApercu()
         sceneCreee.definirCameraEpique(proprietes.cameraEpique)
+        appliquerActivite()
         if (proprietes.vueCamera && proprietes.vueCamera !== 'avant') sceneCreee.definirVueCamera(proprietes.vueCamera, true)
         emettre('pret')
     } catch (erreurCapturee) {
@@ -112,6 +115,14 @@ onMounted(async () => {
 watch(() => proprietes.attaqueKraken?.id, () => {
     if (proprietes.attaqueKraken) sceneGrille.value?.preparerKraken(proprietes.attaqueKraken.cases)
 })
+/** Rendu en marche tout de suite quand la grille revient à l'écran ; mis en pause un peu après qu'elle a disparu (le temps de la transition). */
+let minuterieActivite: ReturnType<typeof setTimeout> | undefined
+function appliquerActivite() {
+    clearTimeout(minuterieActivite)
+    if (proprietes.active) sceneGrille.value?.definirActive(true)
+    else minuterieActivite = setTimeout(() => sceneGrille.value?.definirActive(false), 1500)
+}
+watch(() => proprietes.active, appliquerActivite)
 watch(() => proprietes.cameraEpique, (actif) => sceneGrille.value?.definirCameraEpique(actif))
 watch(() => proprietes.vueCamera, (vue) => {
     if (vue) sceneGrille.value?.definirVueCamera(vue)

@@ -11,3 +11,4 @@ Ils ont été adaptés pour le jeu (mise à l'échelle, orientation, centrage).
 | Simple Battleship | `public/modeles/cuirasse-simple.glb` | Thomas de Rivaz | https://poly.pizza/m/aYAmfkUYZjg | [CC-BY 3.0](https://creativecommons.org/licenses/by/3.0/) |
 | low poly aircraft carrier with mini jets | `public/modeles/porte-avions-lowpoly.glb` | À COMPLÉTER | https://sketchfab.com/3d-models/low-poly-aircraft-carrier-with-mini-jets-3d5047d68f064cdca0db39354b567241 | À COMPLÉTER |
 | lowpoly USS Hurricane PC-3 | `public/modeles/patrouilleur-hurricane.glb` | À COMPLÉTER | https://sketchfab.com/3d-models/lowpoly-uss-hurricane-pc-3-9582af31655d43ddbb0d3d2af9a037eb | À COMPLÉTER |
+| Tentacle (redressé et doté d'un squelette de 16 os pour l'animation du Kraken) | `public/modeles/tentacule-kraken.glb` | Bill Baran (Sirkut) | https://poly.pizza/m/9m1NMRwGKPy | [CC-BY 3.0](https://creativecommons.org/licenses/by/3.0/) |

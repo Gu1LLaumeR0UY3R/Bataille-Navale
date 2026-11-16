@@ -35,6 +35,9 @@ const PRECALCUL = COMPOSANTES.map((c) => {
     return { kx: k * Math.cos(c.angle), kz: k * Math.sin(c.angle), omega: Math.sqrt(GRAVITE_JEU * k), amplitude: c.poids / POIDS_TOTAL, phase: c.phase }
 })
 
+/** Constantes des six trains d'ondes, partagées avec le shader de l'eau (qui recalcule la même houle sur le GPU). */
+export const COMPOSANTES_HOULE = PRECALCUL
+
 export const AGITATION_DEFAUT = 0.25
 const borner = (valeur: number, minimum = 0, maximum = 1) => Math.min(maximum, Math.max(minimum, valeur))
 const lisse = (valeur: number) => {

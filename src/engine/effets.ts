@@ -16,7 +16,12 @@ import {
     createStandardMaterial,
     createTorus,
     createTransformNode,
+    bakeSkeleton,
+    enableBoneControl,
     enableMaterialTracking,
+    getBoneByName,
+    loadGltf,
+    setBoneWorldPoseDeferred,
     enableStandardVertexColors,
     loadTexture2D,
     onBeforeRender,
@@ -30,11 +35,15 @@ import {
     type Mesh,
     type SceneContext,
     type StandardMaterialProps,
+    type Bone,
+    type SceneNode,
+    type Skeleton,
     type Texture2D,
 } from '@babylonjs/lite'
 import { TAILLE_GRILLE, type Couleur } from '../game/types.ts'
 import { TAILLE_CASE, caseVersMonde } from './boardGeometry.ts'
-import { AGITATION_DEFAUT, ecumeCrete, hauteurVague } from './vagues.ts'
+import { creerMateriauEauGpu, type OptionsEauGpu } from './eauGpu.ts'
+import { AGITATION_DEFAUT, hauteurVague } from './vagues.ts'
 
 export type ResultatImpact = 'rate' | 'touche' | 'coule'
 
@@ -82,6 +91,12 @@ const DUREE_REPOS_TENTACULE = 1
 const DUREE_RETRAIT_TENTACULE = 0.8
 /** Avancement de la tête quand elle atteint le sommet de l'arc : ensuite elle plonge. */
 const AVANCEMENT_SOMMET = 0.55
+/** Tentacules animés avec le vrai modèle 3D (les autres, s'il y en a, sont des chaînes de sphères). */
+const TENTACULES_MODELES = 4
+const OS_TENTACULE = 16
+/** Longueur du modèle (unités du monde) : doit correspondre au fichier tentacule-kraken.glb. */
+const LONGUEUR_MODELE_TENTACULE = 7
+const ECHANTILLONS_CHEMIN = 160
 const DUREE_EXPLOSION = 1
 const DUREE_ONDE = 1.3
 /** Durée totale d'une éclaboussure : gerbe, gouttes puis écume qui se défait. */
@@ -143,7 +158,18 @@ const montrer = (maillage: Mesh, visible: boolean) => setSubtreeVisible(maillage
 // Eau : un plan sous la grille dont la hauteur suit une somme de sinusoïdes.
 // ---------------------------------------------------------------------------------------------
 
+/**
+ * Qualité adaptative : la scène mesure sa fluidité et monte `niveau` quand elle ralentit.
+ * 0 = tout à chaque image ; 1 = l'eau et l'écume sont recalculées une image sur 2 ; 2 = une image sur 3.
+ */
+export interface QualiteAdaptative {
+    niveau: 0 | 1 | 2
+}
+
 export interface OptionsEau {
+    qualite?: QualiteAdaptative
+    /** Lumières de la carte : l'eau est éclairée par le shader, comme le reste de la scène. */
+    lumiere?: OptionsEauGpu['lumiere']
     /** Largeur et profondeur du plan, en unités du monde. */
     taille: number
     couleur: Couleur
@@ -163,15 +189,15 @@ export interface OptionsEau {
 }
 
 /** Finesse du maillage de l'eau : assez fin pour que les petites vagues et les impacts se voient. */
-const SUBDIVISIONS_EAU = 88
-/** Nombre de fois que la texture d'écume se répète sur la surface de l'eau (plus grand = motif plus fin). */
-const REPETITION_ECUME = 3.2
-const OPACITE_SURCOUCHE_ECUME = 0.9
-/** Part d'écume en couleur de sommet conservée sous la texture : un voile léger, pour que l'écume ne flotte pas. */
-const ECUME_SURFACE_AVEC_TEXTURE = 0.3
+const SUBDIVISIONS_EAU = 112
+/** Éclairage de l'eau si la carte n'en précise pas. */
+const LUMIERE_EAU_DEFAUT: OptionsEauGpu['lumiere'] = {
+    ciel: { couleur: [0.78, 0.9, 1], intensite: 0.85 },
+    soleil: { direction: [0.35, -0.85, 0.5], couleur: [1, 0.93, 0.76], intensite: 0.85 },
+}
 
 /** Un boulet qui entre dans l'eau : la surface réagit pendant `DUREE_IMPACT_EAU` secondes. */
-interface ImpactEau {
+export interface ImpactEau {
     x: number
     z: number
     age: number
@@ -212,7 +238,7 @@ function ajouterImpactEau(scene: SceneContext, x: number, z: number, force = 1) 
  *   4. des ONDULATIONS s'éloignent à la vitesse c et s'amortissent :  A · e^(−a/τ) · e^(−r/L) · cos(k·(r − c·a)) · E(r, a)
  *      (E vaut 1 derrière le front d'onde et chute à 0 devant : l'eau ne bouge pas avant que l'onde arrive)
  */
-function hauteurImpacts(x: number, z: number, impacts: readonly ImpactEau[]): number {
+export function hauteurImpacts(x: number, z: number, impacts: readonly ImpactEau[]): number {
     let somme = 0
     for (const impact of impacts) {
         const r = Math.hypot(x - impact.x, z - impact.z)
@@ -248,16 +274,16 @@ function materiauEau(couleur: Couleur, luminosite: number, emission: number, bri
 }
 
 export async function creerEau(moteur: EngineContext, scene: SceneContext, options: OptionsEau): Promise<void> {
-    // Couleurs par sommet : la surface se teinte en blanc là où la houle déferle (écume des crêtes).
-    enableStandardVertexColors()
     const agitation = options.agitation ?? AGITATION_DEFAUT
     const opacite = options.opacite ?? { surface: 1, parois: 1 }
     const colonnes = SUBDIVISIONS_EAU + 1
     const nombreSommets = colonnes * colonnes
+    // Le maillage de la surface est FIXE (plat) : c'est le shader (eauGpu.ts) qui le déforme à chaque image.
     const positions = new Float32Array(nombreSommets * 3)
     const normales = new Float32Array(nombreSommets * 3)
     const uvs = new Float32Array(nombreSommets * 2)
     const indices = new Uint32Array(SUBDIVISIONS_EAU * SUBDIVISIONS_EAU * 6)
+    for (let sommet = 0; sommet < nombreSommets; sommet++) normales[sommet * 3 + 1] = 1
 
     // Même disposition que createGround : la ligne 0 est en haut de l'écran (z maximal).
     for (let rangee = 0; rangee < colonnes; rangee++) {
@@ -335,51 +361,10 @@ export async function creerEau(moteur: EngineContext, scene: SceneContext, optio
     })
 
     const impacts = impactsDeLaScene(scene)
-    const hauteurs = new Float32Array(nombreSommets)
-    const pas = options.taille / SUBDIVISIONS_EAU
-    // Couleur par sommet : teinte de l'eau (la matière est blanche, la couleur passe ici) et opacité.
-    // alpha < 1 dès la création : sinon BabylonLite rend le matériau comme opaque.
-    const alphaMateriau = opacite.surface >= 1 ? 1 : 0.99
-    const alphaEau = opacite.surface / alphaMateriau
-    const COULEUR_ECUME: Couleur = [0.92, 0.97, 1]
-    const OPACITE_ECUME = 0.8
-    const couleurs = new Float32Array(nombreSommets * 4)
-    /** Écume des crêtes en chaque sommet (0 à 1) : sert de masque à la texture d'écume. */
-    const masqueEcume = new Float32Array(nombreSommets)
-    /** Part de blanc appliquée directement à l'eau : réduite quand la texture d'écume prend le relais. */
-    let partEcumeSurface = 1
     let temps = 0
-    const calculer = () => {
-        for (let sommet = 0; sommet < nombreSommets; sommet++) {
-            const x = positions[sommet * 3]!
-            const z = positions[sommet * 3 + 2]!
-            const houle = hauteurVague(x, z, temps, agitation)
-            hauteurs[sommet] = houle + (impacts.length > 0 ? hauteurImpacts(x, z, impacts) : 0)
-            positions[sommet * 3 + 1] = options.niveau + hauteurs[sommet]!
-            const ecume = ecumeCrete(houle, x, z, temps, agitation)
-            masqueEcume[sommet] = ecume
-            const blanc = ecume * partEcumeSurface
-            couleurs[sommet * 4] = options.couleur[0] + (COULEUR_ECUME[0] - options.couleur[0]) * blanc
-            couleurs[sommet * 4 + 1] = options.couleur[1] + (COULEUR_ECUME[1] - options.couleur[1]) * blanc
-            couleurs[sommet * 4 + 2] = options.couleur[2] + (COULEUR_ECUME[2] - options.couleur[2]) * blanc
-            couleurs[sommet * 4 + 3] = alphaEau + (OPACITE_ECUME - alphaEau) * blanc
-        }
-        // Normales : pente de la surface, lue sur les points voisins du maillage (ligne 0 = z maximal).
-        for (let rangee = 0; rangee < colonnes; rangee++) {
-            const haut = Math.max(rangee - 1, 0)
-            const bas = Math.min(rangee + 1, colonnes - 1)
-            for (let colonne = 0; colonne < colonnes; colonne++) {
-                const gauche = Math.max(colonne - 1, 0)
-                const droite = Math.min(colonne + 1, colonnes - 1)
-                const penteX = (hauteurs[rangee * colonnes + droite]! - hauteurs[rangee * colonnes + gauche]!) / ((droite - gauche) * pas)
-                const penteZ = (hauteurs[haut * colonnes + colonne]! - hauteurs[bas * colonnes + colonne]!) / ((bas - haut) * pas)
-                const sommet = rangee * colonnes + colonne
-                const longueur = Math.hypot(penteX, 1, penteZ)
-                normales[sommet * 3] = -penteX / longueur
-                normales[sommet * 3 + 1] = 1 / longueur
-                normales[sommet * 3 + 2] = -penteZ / longueur
-            }
-        }
+    let imageEau = 0
+    /** Seules les parois (le bord du bloc d'eau, ~700 points) sont encore animées par le processeur. */
+    const calculerParois = () => {
         for (let sommet = 0; sommet < cotes.length * colonnes; sommet++) {
             const indiceHaut = sommet * 2
             const x = positionsParois[indiceHaut * 3]!
@@ -387,15 +372,28 @@ export async function creerEau(moteur: EngineContext, scene: SceneContext, optio
             positionsParois[indiceHaut * 3 + 1] = options.niveau + hauteurVague(x, z, temps, agitation) + hauteurImpacts(x, z, impacts)
         }
     }
-    calculer()
+    calculerParois()
+
+    // Texture de dentelle d'écume (public/images/ecume/ecume-crete.png) : sans elle, l'écume reste un voile blanc uni.
+    let textureEcume: Texture2D | null = null
+    try {
+        textureEcume = await loadTexture2D(moteur, `${import.meta.env.BASE_URL}images/ecume/ecume-crete.png`)
+    } catch {
+        textureEcume = null
+    }
+    const eauGpu = creerMateriauEauGpu({
+        couleur: options.couleur,
+        opacite: opacite.surface,
+        agitation,
+        niveau: options.niveau,
+        taille: options.taille,
+        lumiere: options.lumiere ?? LUMIERE_EAU_DEFAUT,
+        textureEcume,
+    })
 
     // Surface
-    const eau = createMeshFromData(moteur, 'eau_profonde', positions, normales, indices, uvs, undefined, undefined, couleurs)
-    const materiauSurface = materiauEau(options.couleur, 1, 0.25, true, alphaMateriau)
-    materiauSurface.diffuseColor = [1, 1, 1] // la teinte vient des couleurs par sommet
-    eau.material = materiauSurface
-    // Sans ce drapeau, Lite ignore l'opacité par sommet : l'eau serait rendue presque opaque (donc sombre).
-    eau.hasVertexAlpha = true
+    const eau = createMeshFromData(moteur, 'eau_profonde', positions, normales, indices, uvs)
+    eau.material = eauGpu.materiau
     addToScene(scene, eau)
 
     // Tranche claire des parois (animée) : l'épaisseur de l'eau vue de côté
@@ -430,38 +428,6 @@ export async function creerEau(moteur: EngineContext, scene: SceneContext, optio
         addToScene(scene, profond)
     }
 
-    // Écume des crêtes : une texture de dentelle (public/images/ecume/ecume-crete.png) posée juste au-dessus de
-    // l'eau, qui épouse les vagues et dérive lentement. Les crêtes (masqueEcume) règlent où elle apparaît ;
-    // la texture donne le détail fin. Sans le fichier, l'eau garde simplement son écume en couleurs de sommets.
-    let surcouche: {
-        maillage: Mesh
-        positions: Float32Array
-        couleurs: Float32Array
-        uvs: Float32Array
-    } | null = null
-    try {
-        const texture = await loadTexture2D(moteur, `${import.meta.env.BASE_URL}images/ecume/ecume-crete.png`)
-        const positionsEcume = Float32Array.from(positions)
-        const couleursEcume = new Float32Array(nombreSommets * 4).fill(1)
-        const uvsEcume = new Float32Array(uvs.length)
-        const maillage = createMeshFromData(moteur, 'eau_ecume_cretes', positionsEcume, normales, indices, uvsEcume, undefined, undefined, couleursEcume)
-        const materiauEcume = createStandardMaterial()
-        materiauEcume.alpha = 0.99
-        materiauEcume.diffuseColor = [1, 1, 1]
-        materiauEcume.emissiveColor = [0.55, 0.6, 0.62]
-        materiauEcume.specularColor = [0, 0, 0]
-        materiauEcume.backFaceCulling = false
-        setStandardOpacityTexture(materiauEcume, texture)
-        materiauEcume.opacityLevel = 1
-        maillage.material = materiauEcume
-        maillage.hasVertexAlpha = true
-        addToScene(scene, maillage)
-        surcouche = { maillage, positions: positionsEcume, couleurs: couleursEcume, uvs: uvsEcume }
-        partEcumeSurface = ECUME_SURFACE_AVEC_TEXTURE
-    } catch {
-        surcouche = null
-    }
-
     onBeforeRender(scene, (deltaMs) => {
         const dt = Math.min(deltaMs, 50) / 1000
         temps += dt
@@ -469,26 +435,13 @@ export async function creerEau(moteur: EngineContext, scene: SceneContext, optio
             impacts[index]!.age += dt
             if (impacts[index]!.age > DUREE_IMPACT_EAU) impacts.splice(index, 1)
         }
-        calculer()
-        updateMeshPositions(moteur, eau, positions)
-        updateMeshNormals(moteur, eau, normales)
-        updateMeshColors(moteur, eau, couleurs)
+        // La surface est calculée par le GPU : on ne lui donne que l'heure et les impacts en cours.
+        eauGpu.mettreAJour(temps, impacts)
+        // Les parois (peu de points) restent sur le processeur ; si la scène ralentit, on les met à jour moins souvent.
+        imageEau++
+        if (imageEau % ((options.qualite?.niveau ?? 0) + 1) !== 0) return
+        calculerParois()
         updateMeshPositions(moteur, parois, positionsParois)
-        if (surcouche) {
-            const derive = [temps * 0.012, temps * 0.007]
-            for (let sommet = 0; sommet < nombreSommets; sommet++) {
-                surcouche.positions[sommet * 3] = positions[sommet * 3]!
-                surcouche.positions[sommet * 3 + 1] = positions[sommet * 3 + 1]! + 0.015
-                surcouche.positions[sommet * 3 + 2] = positions[sommet * 3 + 2]!
-                surcouche.couleurs[sommet * 4 + 3] = Math.min(1, masqueEcume[sommet]! * 1.4) * OPACITE_SURCOUCHE_ECUME
-                surcouche.uvs[sommet * 2] = uvs[sommet * 2]! * REPETITION_ECUME + derive[0]!
-                surcouche.uvs[sommet * 2 + 1] = uvs[sommet * 2 + 1]! * REPETITION_ECUME + derive[1]!
-            }
-            updateMeshPositions(moteur, surcouche.maillage, surcouche.positions)
-            updateMeshNormals(moteur, surcouche.maillage, normales)
-            updateMeshColors(moteur, surcouche.maillage, surcouche.couleurs)
-            updateMeshUvs(moteur, surcouche.maillage, surcouche.uvs)
-        }
     })
 }
 
@@ -606,6 +559,7 @@ interface Tache {
 }
 
 export interface OptionsEffets {
+    qualite?: QualiteAdaptative
     /** Agitation de la mer de la carte (la même que celle de l'eau). */
     agitation?: number
     /** Hauteur moyenne de l'eau : les éclaboussures et l'écume y sont posées. */
@@ -619,6 +573,7 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext, op
     const niveauEau = options.niveauEau ?? 0
     const impactsEau = impactsDeLaScene(scene)
     let suiviBoulet: ((suivi: SuiviBoulet | null) => void) | null = null
+    let imagePlans = 0
     let dureeVolCoulant = DUREE_VOL
     enableStandardVertexColors()
 
@@ -969,6 +924,41 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext, op
         impactFait: boolean
         surgi: boolean
         phase: number
+        /** Modèle 3D riggé (si le fichier est disponible) ; sinon le tentacule est une chaîne de sphères. */
+        modele: ModeleTentacule | null
+        /** Table de longueurs d'arc du chemin suivi par le modèle (distance cumulée au point i). */
+        chemin: Float32Array
+        longueurChemin: number
+    }
+    interface ModeleTentacule {
+        racine: SceneNode
+        squelette: Skeleton
+        os: Bone[]
+    }
+
+    // Modèle 3D du tentacule : « Tentacle » de Bill Baran (Sirkut), CC-BY 3.0, via Poly Pizza (voir CREDITS.md).
+    // Il a été redressé et doté d'un squelette de 16 os en chaîne : chaque os est posé le long de l'arc de l'attaque.
+    const modelesTentacule: ModeleTentacule[] = []
+    try {
+        enableBoneControl()
+        for (let index = 0; index < TENTACULES_MODELES; index++) {
+            const conteneur = await loadGltf(moteur, `${import.meta.env.BASE_URL}modeles/tentacule-kraken.glb`)
+            addToScene(scene, conteneur)
+            const squelette = conteneur.skeletons?.[0]
+            const racine = conteneur.entities[0] as SceneNode | undefined
+            if (!squelette || !racine) throw new Error('tentacule sans squelette')
+            const os: Bone[] = []
+            for (let numero = 0; numero < OS_TENTACULE; numero++) {
+                const bone = getBoneByName(squelette, `Os${numero}`)
+                if (!bone) throw new Error(`os ${numero} introuvable`)
+                os.push(bone)
+            }
+            setSubtreeVisible(racine, false)
+            modelesTentacule.push({ racine, squelette, os })
+        }
+    } catch {
+        // Pas de modèle : les tentacules restent des chaînes de sphères.
+        modelesTentacule.length = 0
     }
     const materielTentacule = await creerMateriau([0.34, 0.17, 0.4], [0.1, 0.04, 0.13])
     const tentacules: Tentacule[] = Array.from({ length: TENTACULES_MAX }, () => ({
@@ -982,7 +972,11 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext, op
         impactFait: false,
         surgi: false,
         phase: 0,
+        modele: null,
+        chemin: new Float32Array(0),
+        longueurChemin: 1,
     }))
+    tentacules.forEach((tentacule, index) => { tentacule.modele = modelesTentacule[index] ?? null })
     /** Point de la courbe (Bézier cubique) : part sous l'eau près de la cible, monte haut, plonge sur la cible. */
     const pointTentacule = (tentacule: Tentacule, u: number, sortie: Vec3) => {
         const [bx, bz] = tentacule.base
@@ -1003,6 +997,151 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext, op
         sortie[2] = a * pz[0]! + b * pz[1]! + c * pz[2]! + d * pz[3]!
     }
     const pointTemporaire: Vec3 = [0, 0, 0]
+
+    // --- Tentacule 3D riggé : les 16 os sont posés le long d'un chemin (monte du fond, arc haut, plonge sur la cible) ---
+    /** Calcule le chemin du tentacule : une courbe qui part sous le sable, monte droit, fait un arc et plonge verticalement. */
+    const preparerChemin = (tentacule: Tentacule) => {
+        const [bx, bz] = tentacule.base
+        const [cx, cz] = tentacule.cible
+        const dx = cx - bx
+        const dz = cz - bz
+        const px = [bx, bx + dx * 0.05, bx + dx * 0.93, cx]
+        const pz = [bz, bz + dz * 0.05, bz + dz * 0.93, cz]
+        const py = [-5.5, 7.5, 7, 0.1]
+        const table = new Float32Array(ECHANTILLONS_CHEMIN * 4)
+        let cumul = 0
+        for (let i = 0; i < ECHANTILLONS_CHEMIN; i++) {
+            const u = i / (ECHANTILLONS_CHEMIN - 1)
+            const v = 1 - u
+            const a = v * v * v
+            const b = 3 * v * v * u
+            const c = 3 * v * u * u
+            const d = u * u * u
+            const x = a * px[0]! + b * px[1]! + c * px[2]! + d * px[3]!
+            const y = a * py[0]! + b * py[1]! + c * py[2]! + d * py[3]!
+            const z = a * pz[0]! + b * pz[1]! + c * pz[2]! + d * pz[3]!
+            if (i > 0) cumul += Math.hypot(x - table[(i - 1) * 4]!, y - table[(i - 1) * 4 + 1]!, z - table[(i - 1) * 4 + 2]!)
+            table[i * 4] = x
+            table[i * 4 + 1] = y
+            table[i * 4 + 2] = z
+            table[i * 4 + 3] = cumul
+        }
+        tentacule.chemin = table
+        tentacule.longueurChemin = cumul
+    }
+    /** Position sur le chemin à la distance `s` du départ (prolongé en ligne droite avant le début et après la fin). */
+    const positionSurChemin = (tentacule: Tentacule, s: number, sortie: Vec3) => {
+        const table = tentacule.chemin
+        const dernier = ECHANTILLONS_CHEMIN - 1
+        if (s <= 0 || s >= tentacule.longueurChemin) {
+            const bout = s <= 0 ? 0 : dernier
+            const voisin = s <= 0 ? 1 : dernier - 1
+            let tx = table[bout * 4]! - table[voisin * 4]!
+            let ty = table[bout * 4 + 1]! - table[voisin * 4 + 1]!
+            let tz = table[bout * 4 + 2]! - table[voisin * 4 + 2]!
+            const longueur = Math.hypot(tx, ty, tz) || 1
+            tx /= longueur; ty /= longueur; tz /= longueur
+            const excedent = s <= 0 ? s : s - tentacule.longueurChemin
+            sortie[0] = table[bout * 4]! + tx * excedent
+            sortie[1] = table[bout * 4 + 1]! + ty * excedent
+            sortie[2] = table[bout * 4 + 2]! + tz * excedent
+            return
+        }
+        let bas = 0
+        let haut = dernier
+        while (haut - bas > 1) {
+            const milieu = (bas + haut) >> 1
+            if (table[milieu * 4 + 3]! <= s) bas = milieu
+            else haut = milieu
+        }
+        const ecart = table[haut * 4 + 3]! - table[bas * 4 + 3]!
+        const part = ecart > 0 ? (s - table[bas * 4 + 3]!) / ecart : 0
+        for (let axe = 0; axe < 3; axe++) sortie[axe] = table[bas * 4 + axe]! + (table[haut * 4 + axe]! - table[bas * 4 + axe]!) * part
+    }
+    const positionsOs = new Float32Array(OS_TENTACULE * 3)
+    const poserModeleTentacule = (tentacule: Tentacule, tete: number, ondulation: number) => {
+        const modele = tentacule.modele!
+        const espacement = LONGUEUR_MODELE_TENTACULE / (OS_TENTACULE - 1)
+        const sTete = tete * tentacule.longueurChemin
+        const dx = tentacule.cible[0] - tentacule.base[0]
+        const dz = tentacule.cible[1] - tentacule.base[1]
+        const longueurHorizontale = Math.hypot(dx, dz) || 1
+        const normaleX = -dz / longueurHorizontale
+        const normaleZ = dx / longueurHorizontale
+        for (let os = 0; os < OS_TENTACULE; os++) {
+            positionSurChemin(tentacule, sTete - LONGUEUR_MODELE_TENTACULE + os * espacement, pointTemporaire)
+            // Le tentacule se tord : décalage latéral qui grandit vers le bout.
+            const part = os / (OS_TENTACULE - 1)
+            const torsion = Math.sin(os * 0.7 - temps * 7 + tentacule.phase) * ondulation * 2.2 * part
+            positionsOs[os * 3] = pointTemporaire[0] + normaleX * torsion
+            positionsOs[os * 3 + 1] = pointTemporaire[1] + Math.cos(os * 0.6 - temps * 6 + tentacule.phase) * ondulation * 0.8 * part
+            positionsOs[os * 3 + 2] = pointTemporaire[2] + normaleZ * torsion
+        }
+        // Orientation de chaque os : l'axe +Y du modèle suit la direction de la chaîne ; le roulis est reporté d'un os au suivant.
+        let precedentX = 1
+        let precedentY = 0
+        let precedentZ = 0
+        for (let os = 0; os < OS_TENTACULE; os++) {
+            const avant = Math.max(os - 1, 0)
+            const apres = Math.min(os + 1, OS_TENTACULE - 1)
+            let yx = positionsOs[apres * 3]! - positionsOs[avant * 3]!
+            let yy = positionsOs[apres * 3 + 1]! - positionsOs[avant * 3 + 1]!
+            let yz = positionsOs[apres * 3 + 2]! - positionsOs[avant * 3 + 2]!
+            const norme = Math.hypot(yx, yy, yz) || 1
+            yx /= norme; yy /= norme; yz /= norme
+            // X = précédent X projeté dans le plan perpendiculaire à Y
+            let proj = precedentX * yx + precedentY * yy + precedentZ * yz
+            let xx = precedentX - yx * proj
+            let xy = precedentY - yy * proj
+            let xz = precedentZ - yz * proj
+            let normeX = Math.hypot(xx, xy, xz)
+            if (normeX < 1e-4) {
+                // chaîne verticale en même temps que le roulis précédent : on prend un autre axe de référence
+                proj = yz
+                xx = -yx * proj; xy = -yy * proj; xz = 1 - yz * proj
+                normeX = Math.hypot(xx, xy, xz) || 1
+            }
+            xx /= normeX; xy /= normeX; xz /= normeX
+            precedentX = xx; precedentY = xy; precedentZ = xz
+            // Z = X × Y (base directe)
+            const zx = xy * yz - xz * yy
+            const zy = xz * yx - xx * yz
+            const zz = xx * yy - xy * yx
+            // Quaternion de la matrice dont les colonnes sont X, Y, Z.
+            const trace = xx + yy + zz
+            let qx: number
+            let qy: number
+            let qz: number
+            let qw: number
+            if (trace > 0) {
+                const racine = Math.sqrt(trace + 1) * 2
+                qw = racine / 4
+                qx = (yz - zy) / racine
+                qy = (zx - xz) / racine
+                qz = (xy - yx) / racine
+            } else if (xx > yy && xx > zz) {
+                const racine = Math.sqrt(1 + xx - yy - zz) * 2
+                qw = (yz - zy) / racine
+                qx = racine / 4
+                qy = (yx + xy) / racine
+                qz = (zx + xz) / racine
+            } else if (yy > zz) {
+                const racine = Math.sqrt(1 + yy - xx - zz) * 2
+                qw = (zx - xz) / racine
+                qx = (yx + xy) / racine
+                qy = racine / 4
+                qz = (zy + yz) / racine
+            } else {
+                const racine = Math.sqrt(1 + zz - xx - yy) * 2
+                qw = (xy - yx) / racine
+                qx = (zx + xz) / racine
+                qy = (zy + yz) / racine
+                qz = racine / 4
+            }
+            setBoneWorldPoseDeferred(modele.squelette, modele.os[os]!, positionsOs[os * 3]!, positionsOs[os * 3 + 1]!, positionsOs[os * 3 + 2]!, qx, qy, qz, qw)
+        }
+        bakeSkeleton(modele.squelette)
+    }
     const avancerTentacules = (dt: number) => {
         for (const tentacule of tentacules) {
             if (!tentacule.actif) continue
@@ -1011,7 +1150,8 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext, op
             if (age < 0) continue
             if (!tentacule.surgi) {
                 tentacule.surgi = true
-                tentacule.segments.forEach((segment) => montrer(segment, true))
+                if (tentacule.modele) setSubtreeVisible(tentacule.modele.racine, true)
+                else tentacule.segments.forEach((segment) => montrer(segment, true))
                 lancerOnde(tentacule.base[0], tentacule.base[1]) // la gerbe où il jaillit
             }
             const finMontee = DUREE_MONTEE_TENTACULE
@@ -1020,7 +1160,8 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext, op
             const finRetrait = finRepos + DUREE_RETRAIT_TENTACULE
             if (age >= finRetrait) {
                 tentacule.actif = false
-                tentacule.segments.forEach((segment) => montrer(segment, false))
+                if (tentacule.modele) setSubtreeVisible(tentacule.modele.racine, false)
+                else tentacule.segments.forEach((segment) => montrer(segment, false))
                 continue
             }
             // Avancement de la tête le long de la courbe.
@@ -1042,6 +1183,10 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext, op
             }
             // Il se tord de plus en plus une fois posé (le bout presse la cible), puis s'apaise en se retirant.
             const agitation = age < finPique ? 0.1 : age < finRepos ? 0.22 : 0.12
+            if (tentacule.modele) {
+                poserModeleTentacule(tentacule, tete, agitation)
+                continue
+            }
             const dx = tentacule.cible[0] - tentacule.base[0]
             const dz = tentacule.cible[1] - tentacule.base[1]
             const longueur = Math.hypot(dx, dz) || 1
@@ -1225,13 +1370,17 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext, op
         }
 
         // Écume restée sur les cases où un tir est tombé à l'eau : elle apparaît puis suit les vagues.
+        // (la mise à jour des feuilles est étalée sur plusieurs images quand la scène ralentit)
+        imagePlans++
+        const periodePlans = (options.qualite?.niveau ?? 0) + 1
+        let rangPlan = 0
         for (const rangee of planCases) {
             for (const plan of rangee) {
                 if (!plan || !plan.actif) continue
                 plan.age += dt
                 const arrivee = borner(plan.age / 0.6)
                 regler(plan, 0.82 * lisser(arrivee * 1.4), (0.62 + 0.44 * (1 - Math.pow(1 - arrivee, 2))) * TAILLE_CASE)
-                poserPlanSurLEau(plan)
+                if ((imagePlans + rangPlan++) % periodePlans === 0 || plan.age < 0.7) poserPlanSurLEau(plan)
             }
         }
 
@@ -1332,6 +1481,7 @@ export async function creerEffets(moteur: EngineContext, scene: SceneContext, op
             tentacule.impactFait = false
             tentacule.surgi = false
             tentacule.phase = hasard(0, Math.PI * 2)
+            if (tentacule.modele) preparerChemin(tentacule)
             tentacule.actif = true
         },
         definirFeu(colonne, ligne, actif) {
