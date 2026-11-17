@@ -7,6 +7,7 @@ import CubeVue from './components/CubeVue.vue'
 import PlacementBateaux from './components/ShipPlacement.vue'
 import EcranAccueil from './components/EcranAccueil.vue'
 import EcranOptions from './components/EcranOptions.vue'
+import EcranCredits from './components/EcranCredits.vue'
 import EcranMode from './components/EcranMode.vue'
 import EcranCartes from './components/EcranCartes.vue'
 import ArsenalDock from './components/ArsenalDock.vue'
@@ -30,7 +31,7 @@ import {
 } from './game/outils.ts'
 import { planifierTour } from './game/iaOutils.ts'
 
-type Etape = 'accueil' | 'options' | 'mode' | 'cartes' | 'placement' | 'en_cours' | 'terminee'
+type Etape = 'accueil' | 'options' | 'credits' | 'mode' | 'cartes' | 'placement' | 'en_cours' | 'terminee'
 
 const etape = ref<Etape>('accueil')
 const mesBateaux = ref<Bateau[]>([])
@@ -772,13 +773,13 @@ const NIVEAUX: Record<Difficulte, { libelle: string, description: string }> = {
     hard: { libelle: 'Difficile', description: 'Chasse méthodique' },
 }
 const libelleEtape = computed(() => ({
-    accueil: '', options: 'Options', mode: 'Nouvelle partie', cartes: 'Choix de la carte', placement: 'Préparation',
+    accueil: '', options: 'Options', credits: 'Crédits', mode: 'Nouvelle partie', cartes: 'Choix de la carte', placement: 'Préparation',
     en_cours: 'Partie en cours', terminee: 'Partie terminée',
 })[etape.value])
 </script>
 
 <template>
-    <EcranAccueil v-if="etape === 'accueil'" @jouer="etape = 'mode'" @options="etape = 'options'" />
+    <EcranAccueil v-if="etape === 'accueil'" @jouer="etape = 'mode'" @options="etape = 'options'" @credits="etape = 'credits'" />
 
     <main v-else class="application">
         <header class="entete-application">
@@ -794,6 +795,7 @@ const libelleEtape = computed(() => ({
 
         <div ref="zoneEtape" class="zone-etape" :class="{ 'avec-dock': etape === 'en_cours' }" :style="{ '--hauteur-dock': `${hauteurDock}px` }">
             <EcranOptions v-if="etape === 'options'" @retour="etape = 'accueil'" />
+            <EcranCredits v-else-if="etape === 'credits'" @retour="etape = 'accueil'" />
             <EcranMode v-else-if="etape === 'mode'" @ia="etape = 'cartes'" @retour="etape = 'accueil'" />
             <EcranCartes v-else-if="etape === 'cartes'" @choisir="carte = $event; etape = 'placement'" @retour="etape = 'mode'" />
 

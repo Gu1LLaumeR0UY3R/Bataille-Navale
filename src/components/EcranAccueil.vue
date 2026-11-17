@@ -1,5 +1,5 @@
 <script setup lang="ts">
-defineEmits<{ jouer: [], options: [] }>()
+defineEmits<{ jouer: [], options: [], credits: [] }>()
 </script>
 
 <template>
@@ -18,6 +18,7 @@ defineEmits<{ jouer: [], options: [] }>()
             <nav class="menu" aria-label="Menu principal">
                 <button type="button" class="principal gros" @click="$emit('jouer')">JOUER</button>
                 <button type="button" class="gros" @click="$emit('options')">OPTIONS</button>
+                <button type="button" class="gros" @click="$emit('credits')">CRÉDITS</button>
             </nav>
         </div>
     </section>
